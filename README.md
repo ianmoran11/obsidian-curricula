@@ -22,7 +22,7 @@ An Obsidian plugin that turns your vault into a personalised, AI-driven learning
 1. Install the [BRAT (Beta Reviewers Auto-update Tester)](https://obsidian.md/plugins?id=obsidian42-brat) community plugin
 2. Open Obsidian Settings → Community Plugins → BRAT
 3. Click "Add a beta plugin"
-4. Enter this repository URL: `https://github.com/anomalyco/obsidian-curricula`
+4. Enter this repository URL: `https://github.com/ianmoran11/obsidian-curricula`
 5. Enable the "Curricula" plugin from your Community Plugins list
 
 ## Manual Installation (Development)

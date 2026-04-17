@@ -1,0 +1,11 @@
+{
+  "id": "obsidian-auto-tutor",
+  "name": "Curricula",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "AI-driven curriculum generator and auto-tutor for Obsidian. Turns your vault into a personalised, proficiency-aware learning environment.",
+  "author": "Ian",
+  "authorUrl": "https://github.com/anomalyco",
+  "isDesktopOnly": false,
+  "requiresJs": true
+}
