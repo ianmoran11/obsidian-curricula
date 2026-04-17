@@ -11,7 +11,9 @@ export interface Stage1Options {
   contextBuilder: ContextBuilder;
   taxonomy: ScopedTaxonomy;
   courseId: CourseId;
+  model: string;
   modelContextLength: number;
+  promptTemplate?: string;
   onComplete: (concepts: ConceptList) => void;
   onError: (error: Error) => void;
 }
@@ -22,7 +24,9 @@ export class Stage1Runner {
   private contextBuilder: ContextBuilder;
   private taxonomy: ScopedTaxonomy;
   private courseId: CourseId;
+  private model: string;
   private modelContextLength: number;
+  private promptTemplate?: string;
   private onComplete: (concepts: ConceptList) => void;
   private onError: (error: Error) => void;
 
@@ -32,12 +36,14 @@ export class Stage1Runner {
     this.contextBuilder = options.contextBuilder;
     this.taxonomy = options.taxonomy;
     this.courseId = options.courseId;
+    this.model = options.model;
     this.modelContextLength = options.modelContextLength;
+    this.promptTemplate = options.promptTemplate;
     this.onComplete = options.onComplete;
     this.onError = options.onError;
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<ConceptList> {
     new Notice('Extracting concepts...');
 
     try {
@@ -45,11 +51,12 @@ export class Stage1Runner {
 
       const prompt = composeStage1Prompt(
         this.taxonomy.selectedIds,
-        contextResult.text
+        contextResult.text,
+        this.promptTemplate
       );
 
       const result = await this.openRouter.chat({
-        model: 'anthropic/claude-3.5-haiku',
+        model: this.model,
         messages: [{ role: 'user', content: prompt }],
         responseFormat: 'json_object',
         temperature: 0.3,
@@ -61,7 +68,7 @@ export class Stage1Runner {
       } catch {
         const retryPrompt = `Your previous response failed validation. Return valid JSON only matching the ConceptList schema. ${result.content}`;
         const retryResult = await this.openRouter.chat({
-          model: 'anthropic/claude-3.5-haiku',
+          model: this.model,
           messages: [{ role: 'user', content: retryPrompt }],
           responseFormat: 'json_object',
           temperature: 0.3,
@@ -80,9 +87,11 @@ export class Stage1Runner {
 
       new Notice(`Extracted ${conceptList.concepts.length} concepts`);
       this.onComplete(conceptList);
+      return conceptList;
     } catch (error) {
       new Notice(`Concept extraction failed: ${(error as Error).message}`);
       this.onError(error as Error);
+      throw error;
     }
   }
 }
@@ -91,11 +100,9 @@ export async function runStage1(
   options: Stage1Options
 ): Promise<ConceptList | null> {
   const runner = new Stage1Runner(options);
-  return new Promise((resolve) => {
-    runner.run().then(() => {
-      resolve(null);
-    }).catch(() => {
-      resolve(null);
-    });
-  });
+  try {
+    return await runner.run();
+  } catch {
+    return null;
+  }
 }

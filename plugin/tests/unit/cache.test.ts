@@ -1,95 +1,257 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheService } from '../../src/services/cache';
-import type { CourseMeta, CourseId, StageCache } from '../../src/interfaces';
+import type {
+  ConceptList,
+  CourseId,
+  CourseMeta,
+  Curriculum,
+  GenerationProgress,
+  ProficiencyMap,
+  ScopedTaxonomy,
+  StageCache,
+} from '../../src/interfaces';
+
+class InMemoryAdapter {
+  files = new Map<string, string>();
+  folders = new Set<string>();
+
+  async write(path: string, content: string): Promise<void> {
+    this.files.set(path, content);
+  }
+
+  async rename(from: string, to: string): Promise<void> {
+    const content = this.files.get(from);
+    if (content === undefined) {
+      throw new Error(`Missing source file: ${from}`);
+    }
+
+    this.files.delete(from);
+    this.files.set(to, content);
+  }
+
+  async read(path: string): Promise<string> {
+    const content = this.files.get(path);
+    if (content === undefined) {
+      throw new Error(`Missing file: ${path}`);
+    }
+
+    return content;
+  }
+
+  async mkdir(path: string): Promise<void> {
+    this.folders.add(path);
+  }
+
+  async list(path: string): Promise<{ files: string[]; folders: string[] }> {
+    const filePrefix = `${path}/`;
+    const files = [...this.files.keys()].filter(file => file.startsWith(filePrefix));
+    const folders = [...this.folders].filter(folder => folder.startsWith(filePrefix));
+    return { files, folders };
+  }
+
+  async remove(path: string): Promise<void> {
+    this.files.delete(path);
+    this.folders.delete(path);
+  }
+}
 
 describe('CacheService', () => {
-  const mockAdapter = {
-    write: vi.fn(),
-    rename: vi.fn(),
-    read: vi.fn(),
-    mkdir: vi.fn(),
-    list: vi.fn(),
-    remove: vi.fn(),
-  };
-
   const pluginDir = '/plugin';
-  let cache: CacheService;
+  const courseId = 'test-course-123' as CourseId;
+  const courseDir = `${pluginDir}/cache/${courseId}`;
+
+  let adapter: InMemoryAdapter;
+  let cacheService: CacheService;
+  let meta: CourseMeta;
+  let stage0: ScopedTaxonomy;
+  let stage1: ConceptList;
+  let stage2: ProficiencyMap;
+  let stage3: Curriculum;
+  let stage4: GenerationProgress;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    cache = new CacheService(mockAdapter as any, pluginDir);
+    adapter = new InMemoryAdapter();
+    cacheService = new CacheService(adapter as never, pluginDir);
+
+    meta = {
+      courseId,
+      seedTopic: 'Linear Algebra',
+      createdAt: '2026-04-18T00:00:00.000Z',
+      lastStageCompleted: null,
+      modelUsed: 'openrouter/test-model',
+    };
+
+    stage0 = {
+      courseId,
+      root: {
+        id: 'root',
+        title: 'Linear Algebra',
+        children: [
+          { id: 'vectors', title: 'Vectors', children: [] },
+          { id: 'matrices', title: 'Matrices', children: [] },
+        ],
+      },
+      selectedIds: ['vectors', 'matrices'],
+    };
+
+    stage1 = {
+      courseId,
+      concepts: [
+        {
+          id: 'vector',
+          name: 'Vector',
+          definition: 'A quantity with magnitude and direction.',
+          sourceRefs: ['intro-to-ml.md'],
+        },
+      ],
+    };
+
+    stage2 = {
+      courseId,
+      scores: {
+        vector: 3,
+      },
+    };
+
+    stage3 = {
+      courseId,
+      title: 'Linear Algebra Foundations',
+      modules: [
+        {
+          id: 'module-1',
+          title: 'Core Ideas',
+          lessons: [
+            {
+              id: 'lesson-1',
+              title: 'Vectors',
+              summary: 'Understand vector basics.',
+              prerequisiteLessonIds: [],
+              relatedConceptIds: ['vector'],
+              difficulty: 'intro',
+              condensed: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    stage4 = {
+      courseId,
+      lessons: [
+        {
+          lessonId: 'lesson-1',
+          filePath: '4-Curriculum/Core Ideas/Vectors.md',
+          status: 'written',
+          sourceRefs: ['intro-to-ml.md'],
+        },
+      ],
+      canvasPath: '4-Curriculum/course.canvas',
+      indexPath: '4-Curriculum/Course Index.md',
+      startedAt: '2026-04-18T00:05:00.000Z',
+      completedAt: '2026-04-18T00:06:00.000Z',
+    };
   });
 
-  describe('writeStage', () => {
-    it('writes atomically via tmp then rename', async () => {
-      const courseId = 'test-course-123' as CourseId;
-      const meta: CourseMeta = {
-        courseId,
-        seedTopic: 'Test',
-        createdAt: '2024-01-01T00:00:00Z',
-        lastStageCompleted: null,
-        modelUsed: 'test-model',
-      };
-      const currentCache: StageCache = { meta };
+  async function persistStage(
+    stage: 0 | 1 | 2 | 3 | 4,
+    data: StageCache['stage0'] | StageCache['stage1'] | StageCache['stage2'] | StageCache['stage3'] | StageCache['stage4']
+  ): Promise<void> {
+    meta.lastStageCompleted = stage;
+    await cacheService.writeMeta(courseId, meta);
+    await cacheService.writeStage(courseId, stage, data, { meta });
+  }
 
-      mockAdapter.write.mockResolvedValue(undefined);
-      mockAdapter.rename.mockResolvedValue(undefined);
+  it('writes stage files as stage payloads, not nested StageCache objects', async () => {
+    await persistStage(0, stage0);
 
-      await cache.writeStage(courseId, 0, { courseId, root: { id: 'r', title: 'R', children: [] }, selectedIds: [] }, currentCache);
+    const stageJson = JSON.parse(await adapter.read(`${courseDir}/stage0.json`));
 
-      expect(mockAdapter.write).toHaveBeenCalledWith(
-        expect.stringContaining('.tmp'),
-        expect.any(String)
-      );
-      expect(mockAdapter.rename).toHaveBeenCalledWith(
-        expect.stringContaining('.tmp'),
-        expect.stringContaining('stage0.json')
-      );
+    expect(stageJson).toEqual(stage0);
+    expect(stageJson).not.toHaveProperty('meta');
+    expect(stageJson).not.toHaveProperty('stage0');
+  });
+
+  it('reconstructs a valid cache from meta and per-stage files across stages 0-4', async () => {
+    await persistStage(0, stage0);
+    await persistStage(1, stage1);
+    await persistStage(2, stage2);
+    await persistStage(3, stage3);
+
+    const resumedBeforeStage4 = await cacheService.resumeFrom(courseId);
+    expect(resumedBeforeStage4).toEqual({
+      nextStage: 4,
+      cache: {
+        meta: { ...meta, lastStageCompleted: 3 },
+        stage0,
+        stage1,
+        stage2,
+        stage3,
+      },
+    });
+
+    await persistStage(4, stage4);
+
+    const reloaded = await cacheService.readCache(courseId);
+    expect(reloaded).toEqual({
+      meta: { ...meta, lastStageCompleted: 4 },
+      stage0,
+      stage1,
+      stage2,
+      stage3,
+      stage4,
+    });
+
+    await expect(cacheService.resumeFrom(courseId)).resolves.toBeNull();
+  });
+
+  it('resumes from the first missing stage when meta is ahead of the on-disk stage files', async () => {
+    await persistStage(0, stage0);
+    await persistStage(1, stage1);
+
+    meta.lastStageCompleted = 2;
+    await cacheService.writeMeta(courseId, meta);
+
+    const resumed = await cacheService.resumeFrom(courseId);
+
+    expect(resumed).toEqual({
+      nextStage: 2,
+      cache: {
+        meta: { ...meta, lastStageCompleted: 1 },
+        stage0,
+        stage1,
+      },
     });
   });
 
-  describe('writeMeta', () => {
-    it('writes meta atomically', async () => {
-      const courseId = 'test-course-123' as CourseId;
-      const meta: CourseMeta = {
-        courseId,
-        seedTopic: 'Test',
-        createdAt: '2024-01-01T00:00:00Z',
-        lastStageCompleted: null,
-        modelUsed: 'test-model',
-      };
+  it('ignores invalid nested-cache stage files left behind by the old contract', async () => {
+    meta.lastStageCompleted = 1;
+    await cacheService.writeMeta(courseId, meta);
+    await adapter.mkdir(courseDir);
+    await adapter.write(
+      `${courseDir}/stage0.json`,
+      JSON.stringify({
+        meta,
+        stage0,
+      })
+    );
 
-      mockAdapter.write.mockResolvedValue(undefined);
-      mockAdapter.rename.mockResolvedValue(undefined);
-      mockAdapter.mkdir.mockResolvedValue(undefined);
+    const resumed = await cacheService.resumeFrom(courseId);
 
-      await cache.writeMeta(courseId, meta);
-
-      expect(mockAdapter.mkdir).toHaveBeenCalled();
-      expect(mockAdapter.write).toHaveBeenCalledWith(
-        expect.stringContaining('.tmp'),
-        expect.any(String)
-      );
+    expect(resumed).toEqual({
+      nextStage: 0,
+      cache: {
+        meta: { ...meta, lastStageCompleted: null },
+      },
     });
   });
 
-  describe('getCourseIds', () => {
-    it('returns empty array when no courses exist', async () => {
-      mockAdapter.list.mockResolvedValue({ files: [], folders: [] });
+  it('writes meta atomically via tmp then rename', async () => {
+    const writeSpy = vi.spyOn(adapter, 'write');
+    const renameSpy = vi.spyOn(adapter, 'rename');
 
-      const ids = await cache.getCourseIds();
-      expect(ids).toEqual([]);
-    });
-  });
+    await cacheService.writeMeta(courseId, meta);
 
-  describe('clearCourse', () => {
-    it('removes course directory', async () => {
-      mockAdapter.list.mockResolvedValue({ files: [], folders: [] });
-      mockAdapter.remove.mockResolvedValue(undefined);
-
-      await cache.clearCourse('test-course' as CourseId);
-
-      expect(mockAdapter.remove).toHaveBeenCalled();
-    });
+    expect(writeSpy).toHaveBeenCalledWith(`${courseDir}/meta.tmp`, expect.any(String));
+    expect(renameSpy).toHaveBeenCalledWith(`${courseDir}/meta.tmp`, `${courseDir}/meta.json`);
   });
 });

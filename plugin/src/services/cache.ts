@@ -1,6 +1,23 @@
 import { DataAdapter } from 'obsidian';
-import { validateCourseMeta } from './validator';
-import type { StageCache, CourseMeta, CourseId } from '../interfaces';
+import {
+  validate,
+  validateConceptList,
+  validateCourseMeta,
+  validateCurriculum,
+  validateProficiencyMap,
+  validateScopedTaxonomy,
+  validators,
+} from './validator';
+import type {
+  ConceptList,
+  CourseId,
+  CourseMeta,
+  Curriculum,
+  GenerationProgress,
+  ProficiencyMap,
+  ScopedTaxonomy,
+  StageCache,
+} from '../interfaces';
 
 export class CacheService {
   private adapter: DataAdapter;
@@ -15,20 +32,52 @@ export class CacheService {
     return `${this.pluginDir}/cache/${courseId}`;
   }
 
+  private normalizeLastCompletedStage(cache: StageCache): 0 | 1 | 2 | 3 | 4 | null {
+    const stages = [cache.stage0, cache.stage1, cache.stage2, cache.stage3, cache.stage4];
+    let lastCompleted: 0 | 1 | 2 | 3 | 4 | null = null;
+
+    for (let stage = 0; stage < stages.length; stage++) {
+      if (!stages[stage]) {
+        break;
+      }
+
+      lastCompleted = stage as 0 | 1 | 2 | 3 | 4;
+    }
+
+    return lastCompleted;
+  }
+
+  private validateStageData(
+    stage: 0 | 1 | 2 | 3 | 4,
+    data: unknown
+  ): ScopedTaxonomy | ConceptList | ProficiencyMap | Curriculum | GenerationProgress {
+    switch (stage) {
+      case 0:
+        return validateScopedTaxonomy(data);
+      case 1:
+        return validateConceptList(data);
+      case 2:
+        return validateProficiencyMap(data);
+      case 3:
+        return validateCurriculum(data);
+      case 4:
+        return validate(validators.generationProgress, data);
+    }
+  }
+
   async writeStage(
     courseId: CourseId,
     stage: 0 | 1 | 2 | 3 | 4,
     data: unknown,
-    currentCache: StageCache
+    _currentCache: StageCache
   ): Promise<void> {
     const dir = this.cacheDir(courseId);
-    const stageKey = `stage${stage}` as keyof StageCache;
-    const updatedCache = { ...currentCache, [stageKey]: data };
+    await this.adapter.mkdir(dir);
 
     const tmpPath = `${dir}/stage${stage}.tmp`;
     const finalPath = `${dir}/stage${stage}.json`;
 
-    const json = JSON.stringify(updatedCache, null, 2);
+    const json = JSON.stringify(this.validateStageData(stage, data), null, 2);
     await this.adapter.write(tmpPath, json);
     await this.adapter.rename(tmpPath, finalPath);
   }
@@ -47,14 +96,18 @@ export class CacheService {
         const stagePath = `${dir}/stage${stage}.json`;
         try {
           const content = await this.adapter.read(stagePath);
-          const stageData = JSON.parse(content);
+          const stageData = this.validateStageData(
+            stage as 0 | 1 | 2 | 3 | 4,
+            JSON.parse(content)
+          );
           const stageKey = `stage${stage}` as keyof StageCache;
           (cache as unknown as Record<string, unknown>)[stageKey] = stageData;
         } catch {
-          // Stage file doesn't exist, continue
+          // Missing or invalid stage files are treated as incomplete progress.
         }
       }
 
+      cache.meta.lastStageCompleted = this.normalizeLastCompletedStage(cache);
       return cache;
     } catch {
       return null;
@@ -107,7 +160,8 @@ export class CacheService {
     const cache = await this.readCache(courseId);
     if (!cache) return null;
 
-    const lastStage = cache.meta.lastStageCompleted;
+    const lastStage = this.normalizeLastCompletedStage(cache);
+    cache.meta.lastStageCompleted = lastStage;
     let nextStage: 0 | 1 | 2 | 3 | 4;
 
     if (lastStage === null) {

@@ -89,16 +89,20 @@ Output rules:
 
 const KNOWLEDGE_ONLY_PLACEHOLDER = '(no user-provided sources — rely on your general knowledge of the topic)';
 
-export function composeStage0Prompt(seedTopic: string): string {
-  return STAGE0_PROMPT.replace('{{seedTopic}}', seedTopic);
+export function composeStage0Prompt(seedTopic: string, template = STAGE0_PROMPT): string {
+  return template.replace('{{seedTopic}}', seedTopic);
 }
 
-export function composeStage1Prompt(selectedNodeIds: string[], contextText: string): string {
+export function composeStage1Prompt(
+  selectedNodeIds: string[],
+  contextText: string,
+  template = STAGE1_PROMPT
+): string {
   let context = contextText;
   if (!contextText || contextText.trim().length === 0) {
     context = KNOWLEDGE_ONLY_PLACEHOLDER;
   }
-  return STAGE1_PROMPT
+  return template
     .replace('{{selectedNodeIds}}', selectedNodeIds.join(', '))
     .replace('{{contextText}}', context);
 }
@@ -107,20 +111,26 @@ export function composeStage3Prompt(
   selectedNodeIds: string[],
   concepts: Concept[],
   proficiencyMap: ProficiencyMap,
-  contextText: string
+  contextText: string,
+  template = STAGE3_PROMPT
 ): string {
   let context = contextText;
   if (!contextText || contextText.trim().length === 0) {
     context = KNOWLEDGE_ONLY_PLACEHOLDER;
   }
-  return STAGE3_PROMPT
+  return template
     .replace('{{selectedNodeIds}}', selectedNodeIds.join(', '))
     .replace('{{concepts}}', JSON.stringify(concepts))
     .replace('{{proficiencyMap}}', JSON.stringify(proficiencyMap.scores))
     .replace('{{contextText}}', context);
 }
 
-export function composeStage4Prompt(lesson: LessonSpec, relatedConcepts: Concept[], contextText: string): string {
+export function composeStage4Prompt(
+  lesson: LessonSpec,
+  relatedConcepts: Concept[],
+  contextText: string,
+  template = STAGE4_PROMPT
+): string {
   let context = contextText;
   if (!contextText || contextText.trim().length === 0) {
     context = KNOWLEDGE_ONLY_PLACEHOLDER;
@@ -129,7 +139,7 @@ export function composeStage4Prompt(lesson: LessonSpec, relatedConcepts: Concept
     .filter(c => lesson.relatedConceptIds.includes(c.id))
     .map(c => `- ${c.name}: ${c.definition}`)
     .join('\n');
-  return STAGE4_PROMPT
+  return template
     .replace('{{lesson}}', JSON.stringify(lesson))
     .replace('{{relatedConcepts}}', conceptsWithDefs)
     .replace('{{contextText}}', context);

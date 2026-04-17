@@ -4,6 +4,8 @@ import { ContextBuilder } from '../services/context';
 import { validateCurriculum } from '../services/validator';
 import { composeStage3Prompt } from '../prompts';
 import type { ScopedTaxonomy, ConceptList, ProficiencyMap, Curriculum, CourseId } from '../interfaces';
+import type { LockService } from '../services/lock';
+import { showConflictModal } from '../ui/conflict-modal';
 
 export interface Stage3Options {
   app: App;
@@ -13,7 +15,10 @@ export interface Stage3Options {
   concepts: ConceptList;
   proficiency: ProficiencyMap;
   courseId: CourseId;
+  lockService?: LockService;
+  model: string;
   modelContextLength: number;
+  promptTemplate?: string;
   onComplete: (curriculum: Curriculum) => void;
   onError: (error: Error) => void;
 }
@@ -22,17 +27,32 @@ export async function runStage3(options: Stage3Options): Promise<Curriculum | nu
   new Notice('Designing curriculum...');
 
   try {
+    if (options.lockService) {
+      const lockState = await options.lockService.isLockedByAnother(options.courseId);
+      if (lockState.locked && lockState.info) {
+        showConflictModal({
+          app: options.app,
+          lockInfo: lockState.info,
+          onCancel: () => {
+            options.onError(new Error('Cancelled: generation in progress on another device'));
+          },
+        });
+        return null;
+      }
+    }
+
     const contextResult = await options.contextBuilder.buildContext(options.modelContextLength);
 
     const prompt = composeStage3Prompt(
       options.taxonomy.selectedIds,
       options.concepts.concepts,
       options.proficiency,
-      contextResult.text
+      contextResult.text,
+      options.promptTemplate
     );
 
     const result = await options.openRouter.chat({
-      model: 'anthropic/claude-3.5-haiku',
+      model: options.model,
       messages: [{ role: 'user', content: prompt }],
       responseFormat: 'json_object',
       temperature: 0.3,
@@ -44,7 +64,7 @@ export async function runStage3(options: Stage3Options): Promise<Curriculum | nu
     } catch {
       const retryPrompt = `Your previous response failed validation. Return valid JSON only matching the Curriculum schema. ${result.content}`;
       const retryResult = await options.openRouter.chat({
-        model: 'anthropic/claude-3.5-haiku',
+        model: options.model,
         messages: [{ role: 'user', content: retryPrompt }],
         responseFormat: 'json_object',
         temperature: 0.3,

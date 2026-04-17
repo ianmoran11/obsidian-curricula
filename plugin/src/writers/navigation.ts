@@ -1,5 +1,9 @@
-export function buildBreadcrumb(courseTitle: string, moduleTitle: string, lessonTitle: string): string {
-  return `[[Course Index]] > [[${moduleTitle}]]\n`;
+function toWikiTarget(filePath: string): string {
+  return filePath.replace(/\.md$/i, '');
+}
+
+export function buildBreadcrumb(courseIndexPath: string, modulePath: string, moduleTitle: string): string {
+  return `[[${toWikiTarget(courseIndexPath)}|Course Index]] > [[${toWikiTarget(modulePath)}|${moduleTitle}]]\n`;
 }
 
 export function buildPrevNext(
@@ -11,13 +15,13 @@ export function buildPrevNext(
   parts.push('\n**Navigation:**\n');
   
   if (prevLesson) {
-    parts.push(`- Previous: [[${prevLesson.title}|${prevLesson.title}]]\n`);
+    parts.push(`- Previous: [[${toWikiTarget(prevLesson.filePath)}|${prevLesson.title}]]\n`);
   }
   
   if (nextLesson) {
-    parts.push(`- Next: [[${nextLesson.title}|${nextLesson.title}]]\n`);
+    parts.push(`- Next: [[${toWikiTarget(nextLesson.filePath)}|${nextLesson.title}]]\n`);
   } else {
-    parts.push(`- Next: [[Course Index]]\n`);
+    parts.push(`- Next: [[${toWikiTarget(courseIndexPath)}|Course Index]]\n`);
   }
   
   return parts.join('');

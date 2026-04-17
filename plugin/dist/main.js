@@ -6,13 +6,14 @@ var __export = (target, all) => {
 };
 
 // src/plugin.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
   openRouterApiKey: "",
   defaultModel: "",
+  _modelsCache: null,
   promptOverrides: {
     stage0: "",
     stage1: "",
@@ -20,6 +21,86 @@ var DEFAULT_SETTINGS = {
     stage4: ""
   }
 };
+function mergeSettings(data) {
+  const saved = data ?? {};
+  const promptOverrides = saved.promptOverrides ?? {};
+  return {
+    openRouterApiKey: saved.openRouterApiKey ?? DEFAULT_SETTINGS.openRouterApiKey,
+    defaultModel: saved.defaultModel ?? DEFAULT_SETTINGS.defaultModel,
+    _modelsCache: normalizeModelsCache(saved._modelsCache),
+    promptOverrides: {
+      stage0: promptOverrides.stage0 ?? DEFAULT_SETTINGS.promptOverrides.stage0,
+      stage1: promptOverrides.stage1 ?? DEFAULT_SETTINGS.promptOverrides.stage1,
+      stage3: promptOverrides.stage3 ?? DEFAULT_SETTINGS.promptOverrides.stage3,
+      stage4: promptOverrides.stage4 ?? DEFAULT_SETTINGS.promptOverrides.stage4
+    }
+  };
+}
+function normalizeModelsCache(cache) {
+  if (!cache || typeof cache !== "object") {
+    return null;
+  }
+  const candidate = cache;
+  if (!Array.isArray(candidate.data) || typeof candidate.cachedAt !== "number") {
+    return null;
+  }
+  const data = candidate.data.flatMap((model) => {
+    if (!model || typeof model !== "object") {
+      return [];
+    }
+    const typedModel = model;
+    if (typeof typedModel.id !== "string" || typeof typedModel.name !== "string" || typeof typedModel.contextLength !== "number") {
+      return [];
+    }
+    return [{
+      id: typedModel.id,
+      name: typedModel.name,
+      contextLength: typedModel.contextLength
+    }];
+  });
+  if (data.length === 0) {
+    return null;
+  }
+  return {
+    data,
+    cachedAt: candidate.cachedAt
+  };
+}
+function buildModelOptions(models, selectedModel) {
+  const options = models.map((model) => ({
+    value: model.id,
+    label: `${model.name} (${model.id})`
+  }));
+  if (selectedModel && !models.some((model) => model.id === selectedModel)) {
+    options.unshift({
+      value: selectedModel,
+      label: `${selectedModel} (manual)`
+    });
+  }
+  return options;
+}
+function pickDefaultModel(models, selectedModel) {
+  const trimmedSelection = selectedModel.trim();
+  if (trimmedSelection) {
+    return trimmedSelection;
+  }
+  return models[0]?.id ?? "";
+}
+async function refreshModelCache(settings, openRouter) {
+  const models = await openRouter.listModels({ forceRefresh: true });
+  return {
+    ...settings,
+    defaultModel: pickDefaultModel(models, settings.defaultModel),
+    _modelsCache: {
+      data: models,
+      cachedAt: Date.now()
+    }
+  };
+}
+async function verifyOpenRouterConnection(openRouter) {
+  const models = await openRouter.listModels({ forceRefresh: true });
+  return models.length;
+}
 var CurriculaSettingsTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin, settings) {
     super(app, plugin);
@@ -43,27 +124,45 @@ var CurriculaSettingsTab = class extends import_obsidian.PluginSettingTab {
       text.setValue(this.settingsData.openRouterApiKey);
       text.onChange(async (value) => {
         this.settingsData.openRouterApiKey = value;
-        await this.ownerPlugin.saveData(this.settingsData);
+        await this.persistSettings();
       });
     });
   }
   addModelSection() {
-    new import_obsidian.Setting(this.containerEl).setName("Default Model").setDesc("Model used for curriculum generation. Refresh models after completing Task 10.").addDropdown((dropdown) => {
+    const availableModels = this.settingsData._modelsCache?.data ?? [];
+    const modelOptions = buildModelOptions(availableModels, this.settingsData.defaultModel);
+    new import_obsidian.Setting(this.containerEl).setName("Default Model").setDesc("Model used for curriculum generation. Pick from fetched models or enter one manually below.").addDropdown((dropdown) => {
       dropdown.addOption("", "-- Select a model --");
-      if (this.settingsData.defaultModel) {
-        dropdown.addOption(this.settingsData.defaultModel, this.settingsData.defaultModel);
+      for (const option of modelOptions) {
+        dropdown.addOption(option.value, option.label);
       }
+      dropdown.setValue(this.settingsData.defaultModel);
       dropdown.onChange(async (value) => {
-        if (value) {
-          this.settingsData.defaultModel = value;
-          await this.ownerPlugin.saveData(this.settingsData);
-        }
+        this.settingsData.defaultModel = value;
+        await this.persistSettings();
+        this.display();
       });
     });
-    new import_obsidian.Setting(this.containerEl).setName("Refresh Models").setDesc("Fetch available models from OpenRouter (available after Task 10)").addButton((button) => {
-      button.setTooltip("Complete Task 10 to enable model listing");
-      button.setDisabled(true);
+    new import_obsidian.Setting(this.containerEl).setName("Manual Model ID").setDesc("Fallback for models not returned by the API. Example: anthropic/claude-3.5-haiku").addText((text) => {
+      text.setPlaceholder("anthropic/claude-3.5-haiku");
+      text.setValue(this.settingsData.defaultModel);
+      text.onChange(async (value) => {
+        this.settingsData.defaultModel = value.trim();
+        await this.persistSettings();
+        this.display();
+      });
+    });
+    new import_obsidian.Setting(this.containerEl).setName("Model Actions").setDesc("Refresh the model list from OpenRouter or verify your API key and connectivity.").addButton((button) => {
+      button.setButtonText("Refresh models");
       button.setIcon("refresh");
+      button.onClick(() => {
+        void this.handleRefreshModels();
+      });
+    }).addButton((button) => {
+      button.setButtonText("Test connection");
+      button.onClick(() => {
+        void this.handleTestConnection();
+      });
     });
   }
   addPromptSection(title, key, value) {
@@ -72,28 +171,72 @@ var CurriculaSettingsTab = class extends import_obsidian.PluginSettingTab {
       text.setValue(value);
       text.onChange(async (val) => {
         this.settingsData.promptOverrides[key] = val;
-        await this.ownerPlugin.saveData(this.settingsData);
+        await this.persistSettings();
       });
     });
     const resetBtn = setting.descEl.createEl("button", { text: "Reset to default" });
     resetBtn.onclick = async () => {
       this.settingsData.promptOverrides[key] = "";
-      await this.ownerPlugin.saveData(this.settingsData);
+      await this.persistSettings();
       this.display();
     };
   }
-};
-function loadSettings(plugin) {
-  const defaultSettings = { ...DEFAULT_SETTINGS };
-  try {
-    const data = plugin.loadData();
-    if (data) {
-      return { ...defaultSettings, ...data };
+  async persistSettings() {
+    if (this.ownerPlugin.applySettings) {
+      await this.ownerPlugin.applySettings(this.settingsData);
+      return;
     }
+    await this.ownerPlugin.saveData(this.settingsData);
+  }
+  async handleRefreshModels() {
+    if (!this.ownerPlugin.openRouter) {
+      new import_obsidian.Notice("OpenRouter service is not available.");
+      return;
+    }
+    if (!this.settingsData.openRouterApiKey.trim()) {
+      new import_obsidian.Notice("Enter an OpenRouter API key before refreshing models.");
+      return;
+    }
+    try {
+      this.settingsData = await refreshModelCache(this.settingsData, this.ownerPlugin.openRouter);
+      await this.persistSettings();
+      this.display();
+      new import_obsidian.Notice(`Fetched ${this.settingsData._modelsCache?.data.length ?? 0} models from OpenRouter.`);
+    } catch (error) {
+      new import_obsidian.Notice(`Model refresh failed: ${error.message}`);
+    }
+  }
+  async handleTestConnection() {
+    if (!this.ownerPlugin.openRouter) {
+      new import_obsidian.Notice("OpenRouter service is not available.");
+      return;
+    }
+    if (!this.settingsData.openRouterApiKey.trim()) {
+      new import_obsidian.Notice("Enter an OpenRouter API key before testing the connection.");
+      return;
+    }
+    try {
+      const count = await verifyOpenRouterConnection(this.ownerPlugin.openRouter);
+      this.settingsData = {
+        ...this.settingsData,
+        _modelsCache: this.ownerPlugin.openRouter.getModelsCache()
+      };
+      await this.persistSettings();
+      this.display();
+      new import_obsidian.Notice(`OpenRouter connection verified. ${count} models available.`);
+    } catch (error) {
+      new import_obsidian.Notice(`OpenRouter connection failed: ${error.message}`);
+    }
+  }
+};
+async function loadSettings(plugin) {
+  try {
+    const data = await plugin.loadData();
+    return mergeSettings(data);
   } catch (e) {
     console.error("Failed to load settings", e);
   }
-  return defaultSettings;
+  return mergeSettings(void 0);
 }
 
 // src/constants.ts
@@ -4224,6 +4367,21 @@ var stageCacheSchema = external_exports.object({
   stage3: curriculumSchema.optional(),
   stage4: generationProgressSchema.optional()
 });
+var validators = {
+  courseMeta: courseMetaSchema,
+  taxonomyNode: taxonomyNodeSchema,
+  scopedTaxonomy: scopedTaxonomySchema,
+  concept: conceptSchema,
+  conceptList: conceptListSchema,
+  likertScore: likertScoreSchema,
+  proficiencyMap: proficiencyMapSchema,
+  lessonSpec: lessonSpecSchema,
+  moduleSpec: moduleSpecSchema,
+  curriculum: curriculumSchema,
+  generatedLesson: generatedLessonSchema,
+  generationProgress: generationProgressSchema,
+  stageCache: stageCacheSchema
+};
 var ValidationError = class extends Error {
   constructor(message, details = []) {
     super(message);
@@ -4245,6 +4403,18 @@ function validate(schema, data) {
 function validateCourseMeta(data) {
   return validate(courseMetaSchema, data);
 }
+function validateScopedTaxonomy(data) {
+  return validate(scopedTaxonomySchema, data);
+}
+function validateConceptList(data) {
+  return validate(conceptListSchema, data);
+}
+function validateProficiencyMap(data) {
+  return validate(proficiencyMapSchema, data);
+}
+function validateCurriculum(data) {
+  return validate(curriculumSchema, data);
+}
 
 // src/services/cache.ts
 var CacheService = class {
@@ -4255,13 +4425,37 @@ var CacheService = class {
   cacheDir(courseId) {
     return `${this.pluginDir}/cache/${courseId}`;
   }
-  async writeStage(courseId, stage, data, currentCache) {
+  normalizeLastCompletedStage(cache) {
+    const stages = [cache.stage0, cache.stage1, cache.stage2, cache.stage3, cache.stage4];
+    let lastCompleted = null;
+    for (let stage = 0; stage < stages.length; stage++) {
+      if (!stages[stage]) {
+        break;
+      }
+      lastCompleted = stage;
+    }
+    return lastCompleted;
+  }
+  validateStageData(stage, data) {
+    switch (stage) {
+      case 0:
+        return validateScopedTaxonomy(data);
+      case 1:
+        return validateConceptList(data);
+      case 2:
+        return validateProficiencyMap(data);
+      case 3:
+        return validateCurriculum(data);
+      case 4:
+        return validate(validators.generationProgress, data);
+    }
+  }
+  async writeStage(courseId, stage, data, _currentCache) {
     const dir = this.cacheDir(courseId);
-    const stageKey = `stage${stage}`;
-    const updatedCache = { ...currentCache, [stageKey]: data };
+    await this.adapter.mkdir(dir);
     const tmpPath = `${dir}/stage${stage}.tmp`;
     const finalPath = `${dir}/stage${stage}.json`;
-    const json = JSON.stringify(updatedCache, null, 2);
+    const json = JSON.stringify(this.validateStageData(stage, data), null, 2);
     await this.adapter.write(tmpPath, json);
     await this.adapter.rename(tmpPath, finalPath);
   }
@@ -4276,12 +4470,16 @@ var CacheService = class {
         const stagePath = `${dir}/stage${stage}.json`;
         try {
           const content = await this.adapter.read(stagePath);
-          const stageData = JSON.parse(content);
+          const stageData = this.validateStageData(
+            stage,
+            JSON.parse(content)
+          );
           const stageKey = `stage${stage}`;
           cache[stageKey] = stageData;
         } catch {
         }
       }
+      cache.meta.lastStageCompleted = this.normalizeLastCompletedStage(cache);
       return cache;
     } catch {
       return null;
@@ -4326,7 +4524,8 @@ var CacheService = class {
     const cache = await this.readCache(courseId);
     if (!cache)
       return null;
-    const lastStage = cache.meta.lastStageCompleted;
+    const lastStage = this.normalizeLastCompletedStage(cache);
+    cache.meta.lastStageCompleted = lastStage;
     let nextStage;
     if (lastStage === null) {
       nextStage = 0;
@@ -4438,8 +4637,27 @@ var OpenRouterService = class {
     this.apiKey = opts.apiKey;
     this.baseUrl = opts.baseUrl;
   }
-  async listModels() {
-    if (this.modelsCache && Date.now() - this.modelsCache.cachedAt < this.CACHE_TTL_MS) {
+  updateConfig(opts) {
+    const apiKeyChanged = opts.apiKey !== void 0 && opts.apiKey !== this.apiKey;
+    const baseUrlChanged = opts.baseUrl !== void 0 && opts.baseUrl !== this.baseUrl;
+    if (opts.apiKey !== void 0) {
+      this.apiKey = opts.apiKey;
+    }
+    if (opts.baseUrl !== void 0) {
+      this.baseUrl = opts.baseUrl;
+    }
+    if (apiKeyChanged || baseUrlChanged) {
+      this.modelsCache = null;
+    }
+  }
+  hydrateModelsCache(cache) {
+    this.modelsCache = cache;
+  }
+  getModelsCache() {
+    return this.modelsCache;
+  }
+  async listModels(options) {
+    if (!options?.forceRefresh && this.modelsCache && Date.now() - this.modelsCache.cachedAt < this.CACHE_TTL_MS) {
       return this.modelsCache.data;
     }
     const response = await (0, import_obsidian2.requestUrl)({
@@ -4639,16 +4857,1903 @@ function yieldToMicrotask() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// src/stages/stage0-topic.ts
+var import_obsidian4 = require("obsidian");
+
+// src/prompts/index.ts
+var STAGE0_PROMPT = `You are a curriculum designer. Given a seed topic, produce a hierarchical taxonomy of the subject as JSON. Three levels max: area \u2192 sub-area \u2192 leaf topic. Each node has a stable dot-notation id, a title \u2264 60 chars, and an optional one-line description.
+
+Output JSON EXACTLY matching:
+{ "root": { "id": "...", "title": "...", "description": "...", "children": [ ... ] } }
+
+Seed topic: {{seedTopic}}
+
+Return JSON only. No prose, no markdown fences.`;
+var STAGE1_PROMPT = `You extract foundational concepts for a learning curriculum, filtered by a user-defined scope.
+
+You have TWO knowledge sources available:
+  (a) USER-PROVIDED SOURCES below, which may be empty, partial, or authoritative.
+  (b) Your own general knowledge of the topic from pre-training.
+
+Use BOTH. Prefer the user-provided sources where they are authoritative on a concept; otherwise rely on your general knowledge. If no sources are provided, rely on general knowledge exclusively \u2014 this is a valid mode, not an error.
+
+SCOPE (selected taxonomy node ids):
+{{selectedNodeIds}}
+
+USER-PROVIDED SOURCES (concatenated Markdown \u2014 may be empty):
+---
+{{contextText}}
+---
+
+Return JSON EXACTLY:
+{ "concepts": [ { "id": "slug", "name": "...", "definition": "\u2264200 chars", "sourceRefs": ["filename.md"] } ] }
+
+Rules:
+- 15 \u2264 concepts.length \u2264 40.
+- sourceRefs lists filenames from USER-PROVIDED SOURCES that directly support the concept. \`sourceRefs: []\` is valid and expected when the concept comes from general knowledge or when no sources were provided.
+- Do NOT fabricate filenames. Only list files that actually appeared in USER-PROVIDED SOURCES.
+- Ids are lowercase-hyphen slugs, unique within the list.
+- Do not include concepts outside the scope.
+- Return JSON only.`;
+var STAGE3_PROMPT = `You are designing a personalised syllabus.
+
+Draw on BOTH the user-provided sources below (which may be empty) and your own general knowledge of the topic. The curriculum should be comprehensive and well-structured even when sources are sparse or absent \u2014 lean on your pre-trained knowledge to fill gaps.
+
+SCOPE: {{selectedNodeIds}}
+CONCEPTS: {{concepts}}            (from Stage 1)
+PROFICIENCY: {{proficiencyMap}}    (1=Unfamiliar \u2026 5=Expert)
+USER-PROVIDED SOURCES (may be empty):
+---
+{{contextText}}
+---
+
+Produce a Curriculum matching this schema:
+{ "title": "...", "modules": [ { "id": "...", "title": "...", "lessons": [
+  { "id": "...", "title": "...", "summary": "...",
+    "prerequisiteLessonIds": ["..."],
+    "relatedConceptIds": ["..."],
+    "difficulty": "intro"|"intermediate"|"advanced",
+    "condensed": true|false } ] } ] }
+
+Hard rules:
+- Modules 3\u20137, each with 3\u20138 lessons.
+- Absent sources do not reduce curriculum coverage. A knowledge-only run should produce the same shape as a grounded run.
+- For any concept where the user scored \u22654, either omit lessons that only cover it OR set "condensed": true for the lesson and keep its summary \u2264 2 sentences.
+- Every lesson has \u22651 entry in relatedConceptIds that exists in CONCEPTS.
+- prerequisiteLessonIds must reference ids defined earlier in the same JSON document (no cycles).
+- Return JSON only.`;
+var STAGE4_PROMPT = `Write one lesson in Obsidian-flavoured Markdown.
+
+You have TWO knowledge sources:
+  (a) USER-PROVIDED SOURCES below, which may be empty, partial, or comprehensive.
+  (b) Your own general knowledge of the topic from pre-training.
+
+Use both. When user-provided sources cover the lesson's topic, prefer them \u2014 match their terminology, framing, and examples. When they don't cover it, or are absent entirely, draw freely on your general knowledge. A lesson written purely from general knowledge is valid and expected when no sources are provided. Do NOT refuse, stall, or apologise about missing sources \u2014 just teach the material.
+
+LESSON SPEC: {{lesson}}
+RELATED CONCEPTS (with definitions): {{relatedConcepts}}
+USER-PROVIDED SOURCES (may be empty):
+{{contextText}}
+
+Output rules:
+- Start with a level-1 heading equal to the lesson title.
+- 400\u2013900 words unless "condensed": true, in which case 120\u2013250 words.
+- Include at least one worked example and one "Check your understanding" question with answer in a callout (> [!question]).
+- Use [[wikilinks]] to reference related concepts by their name field.
+- Do NOT include YAML frontmatter \u2014 the plugin will inject it.
+- Do NOT include navigation links \u2014 the plugin will inject breadcrumbs and prev/next.
+- Do NOT include meta-commentary like "based on the provided sources" or "since no source was given" \u2014 write the lesson directly.
+- Return raw Markdown only, no code fences around the whole file.`;
+var KNOWLEDGE_ONLY_PLACEHOLDER2 = "(no user-provided sources \u2014 rely on your general knowledge of the topic)";
+function composeStage0Prompt(seedTopic, template = STAGE0_PROMPT) {
+  return template.replace("{{seedTopic}}", seedTopic);
+}
+function composeStage1Prompt(selectedNodeIds, contextText, template = STAGE1_PROMPT) {
+  let context = contextText;
+  if (!contextText || contextText.trim().length === 0) {
+    context = KNOWLEDGE_ONLY_PLACEHOLDER2;
+  }
+  return template.replace("{{selectedNodeIds}}", selectedNodeIds.join(", ")).replace("{{contextText}}", context);
+}
+function composeStage3Prompt(selectedNodeIds, concepts, proficiencyMap, contextText, template = STAGE3_PROMPT) {
+  let context = contextText;
+  if (!contextText || contextText.trim().length === 0) {
+    context = KNOWLEDGE_ONLY_PLACEHOLDER2;
+  }
+  return template.replace("{{selectedNodeIds}}", selectedNodeIds.join(", ")).replace("{{concepts}}", JSON.stringify(concepts)).replace("{{proficiencyMap}}", JSON.stringify(proficiencyMap.scores)).replace("{{contextText}}", context);
+}
+function composeStage4Prompt(lesson, relatedConcepts, contextText, template = STAGE4_PROMPT) {
+  let context = contextText;
+  if (!contextText || contextText.trim().length === 0) {
+    context = KNOWLEDGE_ONLY_PLACEHOLDER2;
+  }
+  const conceptsWithDefs = relatedConcepts.filter((c) => lesson.relatedConceptIds.includes(c.id)).map((c) => `- ${c.name}: ${c.definition}`).join("\n");
+  return template.replace("{{lesson}}", JSON.stringify(lesson)).replace("{{relatedConcepts}}", conceptsWithDefs).replace("{{contextText}}", context);
+}
+function isKnowledgeOnlyPlaceholder(text) {
+  return text === KNOWLEDGE_ONLY_PLACEHOLDER2;
+}
+
+// src/ui/topic-input-modal.ts
+var import_obsidian3 = require("obsidian");
+var TopicInputModal = class extends import_obsidian3.Modal {
+  constructor(app, onSubmit) {
+    super(app);
+    this.onSubmit = onSubmit;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const coverMode = contentEl.offsetWidth < 500;
+    contentEl.createEl("h2", { text: "Start New Course" });
+    contentEl.createEl("p", {
+      text: 'Enter a seed topic for your curriculum (e.g., "Machine Learning", "Guitar", "World War II"):'
+    });
+    this.errorEl = contentEl.createDiv("error-message");
+    this.errorEl.style.color = "var(--text-error)";
+    this.errorEl.style.display = "none";
+    const inputWrapper = contentEl.createDiv("input-wrapper");
+    this.inputEl = inputWrapper.createEl("input", {
+      type: "text",
+      placeholder: "e.g., Machine Learning",
+      cls: "topic-input"
+    });
+    this.inputEl.style.width = "100%";
+    this.inputEl.style.padding = "12px";
+    this.inputEl.style.margin = "8px 0";
+    this.inputEl.style.minHeight = "48px";
+    this.inputEl.style.fontSize = "16px";
+    this.inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        this.handleSubmit();
+      }
+    });
+    const buttonRow = contentEl.createDiv("button-row");
+    buttonRow.style.display = "flex";
+    buttonRow.style.flexDirection = coverMode ? "column" : "row";
+    buttonRow.style.gap = "8px";
+    buttonRow.style.marginTop = "16px";
+    this.submitButton = new import_obsidian3.ButtonComponent(buttonRow);
+    this.submitButton.setButtonText("Generate Taxonomy");
+    this.submitButton.setCta();
+    this.submitButton.onClick(() => this.handleSubmit());
+    const cancelButton = new import_obsidian3.ButtonComponent(buttonRow);
+    cancelButton.setButtonText("Cancel");
+    cancelButton.onClick(() => this.close());
+    setTimeout(() => this.inputEl.focus(), 100);
+  }
+  handleSubmit() {
+    const value = this.inputEl.value.trim();
+    if (!value) {
+      this.errorEl.setText("Please enter a topic");
+      this.errorEl.style.display = "block";
+      return;
+    }
+    this.errorEl.style.display = "none";
+    this.onSubmit(value);
+    this.close();
+  }
+};
+
+// src/ui/responsive.ts
+var COVER_MODE_THRESHOLD = 900;
+function isCoverMode(viewportWidth) {
+  return viewportWidth < COVER_MODE_THRESHOLD;
+}
+
+// src/ui/taxonomy-view.ts
+var TaxonomyView = class {
+  constructor(options) {
+    this.container = options.container;
+    this.nodes = options.nodes;
+    this.selectedIds = options.selectedIds;
+    this.onSelectionChange = options.onSelectionChange;
+    this.onContinue = options.onContinue;
+    this.render();
+  }
+  render() {
+    this.container.empty();
+    const coverMode = isCoverMode(document.body.offsetWidth);
+    this.container.createEl("h2", { text: "Select Topics to Include" });
+    this.container.createEl("p", {
+      text: coverMode ? "Tap topics to include them. Use breadcrumbs to navigate." : "Check the topics you want in your curriculum. Nested topics are indented."
+    });
+    const treeContainer = this.container.createDiv("taxonomy-tree");
+    treeContainer.style.maxHeight = "400px";
+    treeContainer.style.overflowY = "auto";
+    treeContainer.style.border = "1px solid var(--border-color)";
+    treeContainer.style.borderRadius = "4px";
+    treeContainer.style.padding = "8px";
+    this.renderNode(treeContainer, this.nodes, coverMode);
+    const footer = this.container.createDiv("taxonomy-footer");
+    footer.style.display = "flex";
+    footer.style.justifyContent = "space-between";
+    footer.style.alignItems = "center";
+    footer.style.marginTop = "16px";
+    footer.style.paddingTop = "16px";
+    footer.style.borderTop = "1px solid var(--border-color)";
+    const countEl = footer.createSpan("selected-count");
+    this.updateCount(countEl);
+    const buttonContainer = footer.createDiv("button-container");
+    buttonContainer.style.display = "flex";
+    buttonContainer.style.gap = "8px";
+    const continueBtn = buttonContainer.createEl("button", { text: "Continue" });
+    continueBtn.style.background = "var(--interactive-accent)";
+    continueBtn.style.color = "var(--text-on-accent)";
+    continueBtn.style.border = "none";
+    continueBtn.style.padding = "12px 24px";
+    continueBtn.style.borderRadius = "4px";
+    continueBtn.style.cursor = "pointer";
+    continueBtn.style.minHeight = "48px";
+    continueBtn.style.minWidth = "120px";
+    continueBtn.style.fontSize = "14px";
+    continueBtn.style.fontWeight = "bold";
+    continueBtn.addEventListener("click", () => {
+      if (this.selectedIds.size > 0) {
+        this.onContinue();
+      }
+    });
+    continueBtn.disabled = this.selectedIds.size === 0;
+    continueBtn.style.opacity = this.selectedIds.size === 0 ? "0.5" : "1";
+    const selectAllBtn = buttonContainer.createEl("button", { text: "Select All" });
+    selectAllBtn.style.background = "transparent";
+    selectAllBtn.style.border = "1px solid var(--border-color)";
+    selectAllBtn.style.padding = "12px 24px";
+    selectAllBtn.style.borderRadius = "4px";
+    selectAllBtn.style.cursor = "pointer";
+    selectAllBtn.style.minHeight = "48px";
+    selectAllBtn.style.minWidth = "100px";
+    selectAllBtn.style.fontSize = "14px";
+    selectAllBtn.addEventListener("click", () => this.selectAll());
+  }
+  renderNode(container, node, isCoverModeEnabled, depth = 0) {
+    const nodeEl = container.createDiv("taxonomy-node");
+    nodeEl.style.marginLeft = `${depth * 20}px`;
+    nodeEl.style.padding = "4px 0";
+    const rowEl = nodeEl.createDiv("node-row");
+    rowEl.style.display = "flex";
+    rowEl.style.alignItems = "center";
+    rowEl.style.gap = "8px";
+    rowEl.style.padding = "8px 4px";
+    rowEl.style.minHeight = "48px";
+    rowEl.style.cursor = "pointer";
+    if (node.children.length > 0 && !isCoverModeEnabled) {
+      const toggleEl = rowEl.createEl("span", { text: "\u25B6", cls: "expand-toggle" });
+      toggleEl.style.cursor = "pointer";
+      toggleEl.style.fontSize = "16px";
+      toggleEl.style.width = "32px";
+      toggleEl.style.height = "32px";
+      toggleEl.style.display = "inline-flex";
+      toggleEl.style.alignItems = "center";
+      toggleEl.style.justifyContent = "center";
+      toggleEl.style.minWidth = "32px";
+      toggleEl.style.minHeight = "32px";
+      toggleEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const childContainer = nodeEl.querySelector(".children-container");
+        if (childContainer) {
+          const isExpanded = childContainer.style.display !== "none";
+          childContainer.style.display = isExpanded ? "none" : "block";
+          toggleEl.textContent = isExpanded ? "\u25B6" : "\u25BC";
+        }
+      });
+    }
+    const checkbox = rowEl.createEl("input", { type: "checkbox" });
+    checkbox.checked = this.selectedIds.has(node.id);
+    checkbox.style.width = "24px";
+    checkbox.style.height = "24px";
+    checkbox.style.cursor = "pointer";
+    checkbox.style.minWidth = "24px";
+    checkbox.style.minHeight = "24px";
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        this.selectedIds.add(node.id);
+      } else {
+        this.selectedIds.delete(node.id);
+      }
+      if (node.children.length > 0) {
+        this.cascadeSelection(node, checkbox.checked);
+      }
+      this.onSelectionChange(Array.from(this.selectedIds));
+      this.updateDisplay();
+    });
+    const labelEl = rowEl.createEl("label", { text: node.title });
+    labelEl.style.cursor = "pointer";
+    labelEl.style.flex = "1";
+    labelEl.style.minHeight = "48px";
+    labelEl.style.display = "flex";
+    labelEl.style.alignItems = "center";
+    if (node.description) {
+      labelEl.style.fontStyle = "italic";
+      labelEl.style.color = "var(--text-muted)";
+    }
+    labelEl.addEventListener("click", () => {
+      checkbox.checked = !checkbox.checked;
+      checkbox.dispatchEvent(new Event("change"));
+    });
+    if (node.description) {
+      labelEl.setAttribute("title", node.description);
+    }
+    if (node.children.length > 0) {
+      const childContainer = nodeEl.createDiv("children-container");
+      childContainer.style.display = "block";
+      for (const child of node.children) {
+        this.renderNode(childContainer, child, isCoverModeEnabled, depth + 1);
+      }
+    }
+  }
+  cascadeSelection(node, selected) {
+    const setOrClear = selected ? (id) => this.selectedIds.add(id) : (id) => this.selectedIds.delete(id);
+    const traverse = (n) => {
+      setOrClear(n.id);
+      n.children.forEach(traverse);
+    };
+    node.children.forEach(traverse);
+  }
+  updateDisplay() {
+    const checkboxes = this.container.querySelectorAll('input[type="checkbox"]');
+    checkboxes.forEach((cb) => {
+      const htmlCb = cb;
+      const nodeId = this.getNodeIdForCheckbox(htmlCb);
+      if (nodeId) {
+        htmlCb.checked = this.selectedIds.has(nodeId);
+      }
+    });
+    const countEl = this.container.querySelector(".selected-count");
+    if (countEl) {
+      this.updateCount(countEl);
+    }
+    const continueBtn = this.container.querySelector("button:last-of-type");
+    if (continueBtn) {
+      continueBtn.disabled = this.selectedIds.size === 0;
+      continueBtn.style.opacity = this.selectedIds.size === 0 ? "0.5" : "1";
+    }
+  }
+  getNodeIdForCheckbox(checkbox) {
+    const row = checkbox.closest(".node-row");
+    const label = row?.querySelector("label");
+    const title = label?.textContent;
+    if (!title)
+      return null;
+    const findNode = (node2, title2) => {
+      if (node2.title === title2)
+        return node2;
+      for (const child of node2.children) {
+        const found = findNode(child, title2);
+        if (found)
+          return found;
+      }
+      return null;
+    };
+    const node = findNode(this.nodes, title);
+    return node?.id || null;
+  }
+  updateCount(el) {
+    const leafCount = this.countLeafNodes(this.nodes);
+    const selectedLeaves = this.countSelectedLeaves(this.nodes);
+    el.textContent = `${selectedLeaves} / ${leafCount} topics selected`;
+  }
+  countLeafNodes(node) {
+    if (node.children.length === 0)
+      return 1;
+    return node.children.reduce((sum, child) => sum + this.countLeafNodes(child), 0);
+  }
+  countSelectedLeaves(node) {
+    if (node.children.length === 0) {
+      return this.selectedIds.has(node.id) ? 1 : 0;
+    }
+    return node.children.reduce((sum, child) => sum + this.countSelectedLeaves(child), 0);
+  }
+  selectAll() {
+    const selectAllNodes = (node) => {
+      this.selectedIds.add(node.id);
+      node.children.forEach(selectAllNodes);
+    };
+    selectAllNodes(this.nodes);
+    this.onSelectionChange(Array.from(this.selectedIds));
+    this.updateDisplay();
+  }
+};
+function createTaxonomyView(options) {
+  return new TaxonomyView(options);
+}
+function hasAtLeastOneLeafSelected(nodes, selectedIds) {
+  const checkLeaves = (node) => {
+    if (node.children.length === 0) {
+      return selectedIds.has(node.id);
+    }
+    return node.children.some(checkLeaves);
+  };
+  return checkLeaves(nodes);
+}
+
+// src/stages/stage0-topic.ts
+var Stage0Runner = class {
+  constructor(options) {
+    this.taxonomy = null;
+    this.selectedIds = /* @__PURE__ */ new Set();
+    this.app = options.app;
+    this.openRouter = options.openRouter;
+    this.contextBuilder = options.contextBuilder;
+    this.seedTopic = options.seedTopic;
+    this.courseId = options.courseId;
+    this.model = options.model;
+    this.promptTemplate = options.promptTemplate;
+    this.onComplete = options.onComplete;
+    this.onCancel = options.onCancel;
+  }
+  async run() {
+    new import_obsidian4.Notice("Generating taxonomy...");
+    try {
+      const prompt = composeStage0Prompt(this.seedTopic, this.promptTemplate);
+      const result = await this.openRouter.chat({
+        model: this.model,
+        messages: [{ role: "user", content: prompt }],
+        responseFormat: "json_object"
+      });
+      let parsed;
+      try {
+        parsed = JSON.parse(result.content);
+      } catch {
+        const retryPrompt = `Your previous response was not valid JSON. Return valid JSON only: ${result.content}`;
+        const retryResult = await this.openRouter.chat({
+          model: this.model,
+          messages: [{ role: "user", content: retryPrompt }],
+          responseFormat: "json_object"
+        });
+        parsed = JSON.parse(retryResult.content);
+      }
+      this.taxonomy = validateScopedTaxonomy(parsed).root;
+      this.showTaxonomyView();
+    } catch (error) {
+      new import_obsidian4.Notice(`Taxonomy generation failed: ${error.message}`);
+      this.onCancel();
+    }
+  }
+  showTaxonomyView() {
+    if (!this.taxonomy)
+      return;
+    const modalEl = document.body.createDiv();
+    modalEl.style.position = "fixed";
+    modalEl.style.top = "0";
+    modalEl.style.left = "0";
+    modalEl.style.right = "0";
+    modalEl.style.bottom = "0";
+    modalEl.style.background = "var(--background)";
+    modalEl.style.zIndex = "1000";
+    modalEl.style.overflowY = "auto";
+    modalEl.style.padding = "20px";
+    const contentEl = modalEl.createDiv("taxonomy-content");
+    contentEl.style.maxWidth = "800px";
+    contentEl.style.margin = "0 auto";
+    const closeBtn = modalEl.createEl("button", { text: "\u2715" });
+    closeBtn.style.position = "fixed";
+    closeBtn.style.top = "20px";
+    closeBtn.style.right = "20px";
+    closeBtn.style.background = "transparent";
+    closeBtn.style.border = "none";
+    closeBtn.style.fontSize = "24px";
+    closeBtn.style.cursor = "pointer";
+    closeBtn.style.zIndex = "1001";
+    closeBtn.addEventListener("click", () => {
+      document.body.removeChild(modalEl);
+      this.onCancel();
+    });
+    const view = createTaxonomyView({
+      container: contentEl,
+      nodes: this.taxonomy,
+      selectedIds: this.selectedIds,
+      onSelectionChange: (ids) => {
+        this.selectedIds = new Set(ids);
+      },
+      onContinue: () => {
+        if (this.taxonomy && hasAtLeastOneLeafSelected(this.taxonomy, this.selectedIds)) {
+          this.complete();
+          document.body.removeChild(modalEl);
+        }
+      }
+    });
+  }
+  complete() {
+    if (!this.taxonomy)
+      return;
+    const scopedTaxonomy = {
+      courseId: this.courseId,
+      root: this.taxonomy,
+      selectedIds: Array.from(this.selectedIds)
+    };
+    new import_obsidian4.Notice(`Selected ${this.selectedIds.size} topics`);
+    this.onComplete(scopedTaxonomy);
+  }
+};
+async function runStage0(app, openRouter, contextBuilder, courseId, config) {
+  return new Promise((resolve) => {
+    let runner = null;
+    const modal = new TopicInputModal(app, (seedTopic) => {
+      runner = new Stage0Runner({
+        app,
+        openRouter,
+        contextBuilder,
+        seedTopic,
+        courseId,
+        model: config?.model ?? "anthropic/claude-3.5-haiku",
+        promptTemplate: config?.promptTemplate,
+        onComplete: (taxonomy) => resolve(taxonomy),
+        onCancel: () => resolve(null)
+      });
+      runner.run();
+    });
+    modal.onClose = () => {
+      if (!runner) {
+        resolve(null);
+      }
+    };
+    modal.open();
+  });
+}
+
+// src/stages/stage1-concepts.ts
+var import_obsidian5 = require("obsidian");
+var Stage1Runner = class {
+  constructor(options) {
+    this.app = options.app;
+    this.openRouter = options.openRouter;
+    this.contextBuilder = options.contextBuilder;
+    this.taxonomy = options.taxonomy;
+    this.courseId = options.courseId;
+    this.model = options.model;
+    this.modelContextLength = options.modelContextLength;
+    this.promptTemplate = options.promptTemplate;
+    this.onComplete = options.onComplete;
+    this.onError = options.onError;
+  }
+  async run() {
+    new import_obsidian5.Notice("Extracting concepts...");
+    try {
+      const contextResult = await this.contextBuilder.buildContext(this.modelContextLength);
+      const prompt = composeStage1Prompt(
+        this.taxonomy.selectedIds,
+        contextResult.text,
+        this.promptTemplate
+      );
+      const result = await this.openRouter.chat({
+        model: this.model,
+        messages: [{ role: "user", content: prompt }],
+        responseFormat: "json_object",
+        temperature: 0.3
+      });
+      let parsed;
+      try {
+        parsed = validateConceptList(JSON.parse(result.content));
+      } catch {
+        const retryPrompt = `Your previous response failed validation. Return valid JSON only matching the ConceptList schema. ${result.content}`;
+        const retryResult = await this.openRouter.chat({
+          model: this.model,
+          messages: [{ role: "user", content: retryPrompt }],
+          responseFormat: "json_object",
+          temperature: 0.3
+        });
+        parsed = validateConceptList(JSON.parse(retryResult.content));
+      }
+      if (parsed.concepts.length < 15 || parsed.concepts.length > 40) {
+        new import_obsidian5.Notice(`Warning: ${parsed.concepts.length} concepts extracted (expected 15-40)`);
+      }
+      const conceptList = {
+        courseId: this.courseId,
+        concepts: parsed.concepts
+      };
+      new import_obsidian5.Notice(`Extracted ${conceptList.concepts.length} concepts`);
+      this.onComplete(conceptList);
+      return conceptList;
+    } catch (error) {
+      new import_obsidian5.Notice(`Concept extraction failed: ${error.message}`);
+      this.onError(error);
+      throw error;
+    }
+  }
+};
+async function runStage1(options) {
+  const runner = new Stage1Runner(options);
+  try {
+    return await runner.run();
+  } catch {
+    return null;
+  }
+}
+
+// src/ui/likert-modal.ts
+var import_obsidian6 = require("obsidian");
+var LIKERT_LABELS = ["Unfamiliar", "Slightly Familiar", "Moderately Familiar", "Very Familiar", "Expert"];
+var LIKERT_COLORS = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#27ae60"];
+var LikertModal = class extends import_obsidian6.Modal {
+  constructor(options) {
+    super(options.app);
+    this.currentIndex = 0;
+    this.scores = {};
+    this.conceptEls = [];
+    this.cardsContainer = null;
+    this.progressEl = null;
+    this.coverMode = false;
+    this.concepts = options.concepts;
+    this.courseId = options.courseId;
+    this.onComplete = options.onComplete;
+    this.onCancel = options.onCancel;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.style.padding = "20px";
+    contentEl.style.maxWidth = "100%";
+    this.coverMode = isCoverMode(document.body.offsetWidth);
+    contentEl.createEl("h2", { text: "Assess Your Proficiency" });
+    contentEl.createEl("p", {
+      text: 'Rate your familiarity with each concept from 1 (Unfamiliar) to 5 (Expert). Tap "Skip" if unsure.'
+    });
+    this.progressEl = contentEl.createDiv("likert-progress");
+    this.progressEl.style.marginBottom = "16px";
+    this.updateProgress();
+    this.cardsContainer = contentEl.createDiv("likert-cards");
+    this.cardsContainer.style.display = "flex";
+    this.cardsContainer.style.overflowX = "auto";
+    this.cardsContainer.style.scrollSnapType = "x mandatory";
+    this.cardsContainer.style.gap = "16px";
+    this.cardsContainer.style.padding = "8px 0";
+    for (let i = 0; i < this.concepts.length; i++) {
+      const card = this.createCard(this.concepts[i], i);
+      this.conceptEls.push(card);
+      this.cardsContainer.appendChild(card);
+    }
+    this.setupSwipeGestures();
+    this.showCard(0);
+  }
+  createCard(concept, index) {
+    const card = document.createElement("div");
+    card.className = "likert-card";
+    const cardWidth = this.coverMode ? "min(100%, 320px)" : "min(400px, 100%)";
+    card.style.cssText = `
+      width: ${cardWidth};
+      min-width: 280px;
+      max-width: 400px;
+      flex: 0 0 ${this.coverMode ? "100%" : "auto"};
+      scroll-snap-align: center;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: ${this.coverMode ? "16px" : "20px"};
+      background: var(--background-secondary);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    `;
+    const conceptTitle = card.createEl("h3", { text: concept.name });
+    conceptTitle.style.margin = "0";
+    conceptTitle.style.fontSize = "18px";
+    const definition = card.createEl("p", { text: concept.definition });
+    definition.style.margin = "0";
+    definition.style.color = "var(--text-muted)";
+    definition.style.fontSize = "14px";
+    const buttonsContainer = card.createDiv("likert-buttons");
+    buttonsContainer.style.display = "flex";
+    buttonsContainer.style.gap = "8px";
+    buttonsContainer.style.marginTop = "auto";
+    buttonsContainer.style.paddingTop = "16px";
+    buttonsContainer.style.flexWrap = "wrap";
+    buttonsContainer.style.justifyContent = "center";
+    for (let score = 1; score <= 5; score++) {
+      const btn = buttonsContainer.createEl("button", {
+        text: `${score}`,
+        title: LIKERT_LABELS[score - 1]
+      });
+      btn.style.cssText = `
+        min-width: 48px;
+        min-height: 48px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 2px solid ${LIKERT_COLORS[score - 1]};
+        background: ${this.scores[concept.id] === score ? LIKERT_COLORS[score - 1] : "transparent"};
+        color: ${this.scores[concept.id] === score ? "white" : LIKERT_COLORS[score - 1]};
+        font-size: 16px;
+        font-weight: bold;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+      btn.addEventListener("click", () => {
+        this.selectScore(concept.id, score);
+        this.goToNext();
+      });
+    }
+    const skipBtn = buttonsContainer.createEl("button", { text: "Skip" });
+    skipBtn.style.cssText = `
+      min-width: 48px;
+      min-height: 48px;
+      padding: 0 16px;
+      border-radius: 24px;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 14px;
+      cursor: pointer;
+    `;
+    skipBtn.addEventListener("click", () => this.goToNext());
+    return card;
+  }
+  selectScore(conceptId, score) {
+    this.scores[conceptId] = score;
+    const cardIndex = this.concepts.findIndex((c) => c.id === conceptId);
+    const card = this.conceptEls[cardIndex];
+    if (!card)
+      return;
+    const buttons = card.querySelectorAll(".likert-buttons button");
+    for (let i = 0; i < buttons.length - 1; i++) {
+      const isSelected = i + 1 === score;
+      const btn = buttons[i];
+      btn.style.background = isSelected ? LIKERT_COLORS[i] : "transparent";
+      btn.style.color = isSelected ? "white" : LIKERT_COLORS[i];
+    }
+  }
+  setupSwipeGestures() {
+    if (!this.cardsContainer)
+      return;
+    let startX = 0;
+    let scrollLeft = 0;
+    this.cardsContainer.addEventListener("touchstart", (e) => {
+      startX = e.touches[0].pageX;
+      scrollLeft = this.cardsContainer.scrollLeft;
+    });
+    this.cardsContainer.addEventListener("touchmove", (e) => {
+      const x = e.touches[0].pageX;
+      const walk = (startX - x) * 1.5;
+      this.cardsContainer.scrollLeft = scrollLeft + walk;
+    });
+    this.cardsContainer.addEventListener("touchend", (e) => {
+      const x = e.changedTouches[0].pageX;
+      const diff = startX - x;
+      if (Math.abs(diff) > 50) {
+        if (diff > 0) {
+          this.goToNext();
+        } else {
+          this.goToPrevious();
+        }
+      }
+    });
+  }
+  goToNext() {
+    if (this.currentIndex < this.concepts.length - 1) {
+      this.showCard(this.currentIndex + 1);
+    } else {
+      this.finish();
+    }
+  }
+  goToPrevious() {
+    if (this.currentIndex > 0) {
+      this.showCard(this.currentIndex - 1);
+    }
+  }
+  showCard(index) {
+    this.currentIndex = index;
+    const card = this.conceptEls[index];
+    if (!card || !this.cardsContainer)
+      return;
+    card.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    this.updateProgress();
+  }
+  updateProgress() {
+    if (!this.progressEl)
+      return;
+    this.progressEl.textContent = `Concept ${this.currentIndex + 1} of ${this.concepts.length}`;
+  }
+  finish() {
+    const proficiencyMap = {
+      courseId: this.courseId,
+      scores: { ...this.scores }
+    };
+    for (const concept of this.concepts) {
+      if (!proficiencyMap.scores[concept.id]) {
+        proficiencyMap.scores[concept.id] = 3;
+      }
+    }
+    new import_obsidian6.Notice(`Proficiency assessment complete`);
+    this.onComplete(proficiencyMap);
+    this.close();
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+
+// src/stages/stage2-diagnostic.ts
+async function runStage2(options) {
+  return new Promise((resolve) => {
+    const modal = new LikertModal({
+      app: options.app,
+      concepts: options.concepts.concepts,
+      courseId: options.courseId,
+      onComplete: (proficiency) => {
+        resolve(proficiency);
+      },
+      onCancel: () => {
+        resolve(null);
+      }
+    });
+    modal.open();
+  });
+}
+
+// src/stages/stage3-curriculum.ts
+var import_obsidian8 = require("obsidian");
+
+// src/ui/conflict-modal.ts
+var import_obsidian7 = require("obsidian");
+var ConflictModal = class extends import_obsidian7.Modal {
+  constructor(options) {
+    super(options.app);
+    this.lockInfo = options.lockInfo;
+    this.onCancel = options.onCancel;
+    this.onOverride = options.onOverride;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const coverMode = contentEl.offsetWidth < 500;
+    contentEl.createEl("h2", { text: "Generation Already In Progress" });
+    const message = contentEl.createDiv("conflict-message");
+    message.style.marginTop = "16px";
+    message.style.lineHeight = "1.6";
+    message.createEl("p", {
+      text: `Another device is currently generating this curriculum.`
+    });
+    const deviceInfo = contentEl.createDiv("device-info");
+    deviceInfo.style.marginTop = "12px";
+    deviceInfo.style.padding = "12px";
+    deviceInfo.style.background = "var(--background-secondary)";
+    deviceInfo.style.borderRadius = "6px";
+    deviceInfo.createEl("p", {
+      text: `Device: ${this.lockInfo.deviceName}`
+    });
+    const startedDate = new Date(this.lockInfo.startedAt);
+    deviceInfo.createEl("p", {
+      text: `Started: ${startedDate.toLocaleString()}`
+    });
+    const buttonRow = contentEl.createDiv("button-row");
+    buttonRow.style.display = "flex";
+    buttonRow.style.flexDirection = coverMode ? "column" : "row";
+    buttonRow.style.gap = "8px";
+    buttonRow.style.marginTop = "24px";
+    const cancelButton = new import_obsidian7.ButtonComponent(buttonRow);
+    cancelButton.setButtonText("Cancel");
+    cancelButton.onClick(() => {
+      this.close();
+      this.onCancel();
+    });
+    if (this.onOverride) {
+      const overrideButton = new import_obsidian7.ButtonComponent(buttonRow);
+      overrideButton.setButtonText("Override (Dangerous)");
+      overrideButton.setWarning();
+      overrideButton.onClick(() => {
+        this.close();
+        this.onOverride?.();
+      });
+    }
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+function showConflictModal(options) {
+  new ConflictModal(options).open();
+}
+
+// src/stages/stage3-curriculum.ts
+async function runStage3(options) {
+  new import_obsidian8.Notice("Designing curriculum...");
+  try {
+    if (options.lockService) {
+      const lockState = await options.lockService.isLockedByAnother(options.courseId);
+      if (lockState.locked && lockState.info) {
+        showConflictModal({
+          app: options.app,
+          lockInfo: lockState.info,
+          onCancel: () => {
+            options.onError(new Error("Cancelled: generation in progress on another device"));
+          }
+        });
+        return null;
+      }
+    }
+    const contextResult = await options.contextBuilder.buildContext(options.modelContextLength);
+    const prompt = composeStage3Prompt(
+      options.taxonomy.selectedIds,
+      options.concepts.concepts,
+      options.proficiency,
+      contextResult.text,
+      options.promptTemplate
+    );
+    const result = await options.openRouter.chat({
+      model: options.model,
+      messages: [{ role: "user", content: prompt }],
+      responseFormat: "json_object",
+      temperature: 0.3
+    });
+    let parsed;
+    try {
+      parsed = validateCurriculum(JSON.parse(result.content));
+    } catch {
+      const retryPrompt = `Your previous response failed validation. Return valid JSON only matching the Curriculum schema. ${result.content}`;
+      const retryResult = await options.openRouter.chat({
+        model: options.model,
+        messages: [{ role: "user", content: retryPrompt }],
+        responseFormat: "json_object",
+        temperature: 0.3
+      });
+      parsed = validateCurriculum(JSON.parse(retryResult.content));
+    }
+    const curriculum = {
+      courseId: options.courseId,
+      title: parsed.title,
+      modules: parsed.modules
+    };
+    new import_obsidian8.Notice(`Curriculum ready: ${curriculum.modules.length} modules`);
+    options.onComplete(curriculum);
+    return curriculum;
+  } catch (error) {
+    new import_obsidian8.Notice(`Curriculum design failed: ${error.message}`);
+    options.onError(error);
+    return null;
+  }
+}
+
+// src/stages/stage4-generate.ts
+var import_obsidian9 = require("obsidian");
+
+// src/writers/frontmatter.ts
+function buildFrontmatter(data) {
+  const lines = ["---"];
+  for (const [key, value] of Object.entries(data)) {
+    if (typeof value === "string") {
+      if (value.includes(":") || value.includes('"') || value.includes("'") || value.includes("\n")) {
+        lines.push(`${key}: "${escapeYamlString(value)}"`);
+      } else {
+        lines.push(`${key}: ${value}`);
+      }
+    } else if (typeof value === "boolean") {
+      lines.push(`${key}: ${value}`);
+    } else if (typeof value === "number") {
+      lines.push(`${key}: ${value}`);
+    } else if (Array.isArray(value)) {
+      lines.push(`${key}: [${value.map((v) => `"${v}"`).join(", ")}]`);
+    } else if (value === null) {
+      lines.push(`${key}: null`);
+    } else if (value === void 0) {
+    } else {
+      lines.push(`${key}: "${String(value)}"`);
+    }
+  }
+  lines.push("---");
+  return lines.join("\n");
+}
+function escapeYamlString(s) {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
+// src/writers/markdown.ts
+function slugify(text) {
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").trim();
+}
+function buildLessonFileName(title, existingNames) {
+  let base = slugify(title);
+  if (!base)
+    base = "lesson";
+  let name = base;
+  let counter = 1;
+  while (existingNames.has(name + ".md")) {
+    counter++;
+    name = `${base}-${counter}`;
+  }
+  existingNames.add(name + ".md");
+  return name + ".md";
+}
+
+// src/writers/navigation.ts
+function toWikiTarget(filePath) {
+  return filePath.replace(/\.md$/i, "");
+}
+function buildBreadcrumb(courseIndexPath, modulePath, moduleTitle) {
+  return `[[${toWikiTarget(courseIndexPath)}|Course Index]] > [[${toWikiTarget(modulePath)}|${moduleTitle}]]
+`;
+}
+function buildPrevNext(prevLesson, nextLesson, courseIndexPath) {
+  const parts = ["---"];
+  parts.push("\n**Navigation:**\n");
+  if (prevLesson) {
+    parts.push(`- Previous: [[${toWikiTarget(prevLesson.filePath)}|${prevLesson.title}]]
+`);
+  }
+  if (nextLesson) {
+    parts.push(`- Next: [[${toWikiTarget(nextLesson.filePath)}|${nextLesson.title}]]
+`);
+  } else {
+    parts.push(`- Next: [[${toWikiTarget(courseIndexPath)}|Course Index]]
+`);
+  }
+  return parts.join("");
+}
+
+// src/writers/moc.ts
+function buildMoc(moduleTitle, lessons) {
+  const lines = [
+    `# ${moduleTitle}`,
+    "",
+    `This module contains ${lessons.length} lessons.`,
+    "",
+    "## Lessons",
+    ""
+  ];
+  for (const lesson of lessons) {
+    const fileName = lesson.filePath.split("/").pop()?.replace(".md", "") || lesson.title;
+    lines.push(`- [[${fileName}|${lesson.title}]]`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+function buildCourseIndex(courseTitle, modules) {
+  const lines = [
+    `# ${courseTitle}`,
+    "",
+    `This course contains ${modules.length} modules.`,
+    "",
+    "## Modules",
+    ""
+  ];
+  for (const mod of modules) {
+    const fileName = mod.mocPath.split("/").pop()?.replace(".md", "") || mod.title;
+    lines.push(`- [[${fileName}|${mod.title}]] (${mod.lessonCount} lessons)`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+// src/writers/canvas.ts
+var NODE_WIDTH = 320;
+var NODE_HEIGHT = 200;
+var X_STEP = 400;
+var Y_STEP = 240;
+function generateCanvas(curriculum) {
+  const nodes = [];
+  const edges = [];
+  const lessonToNodeId = /* @__PURE__ */ new Map();
+  for (let modIdx = 0; modIdx < curriculum.modules.length; modIdx++) {
+    const module2 = curriculum.modules[modIdx];
+    const x = modIdx * X_STEP;
+    for (let lessonIdx = 0; lessonIdx < module2.lessons.length; lessonIdx++) {
+      const lesson = module2.lessons[lessonIdx];
+      const y = lessonIdx * Y_STEP;
+      const nodeId = `node-${modIdx}-${lessonIdx}`;
+      const lessonFileName = slugifyForCanvas(lesson.title);
+      const filePath = `4-Curriculum/${slugifyForCanvas(module2.title)}/${lessonFileName}.md`;
+      nodes.push({
+        id: nodeId,
+        type: "file",
+        file: filePath,
+        x,
+        y,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT
+      });
+      lessonToNodeId.set(lesson.id, { nodeId, x, y });
+      for (const prereqId of lesson.prerequisiteLessonIds) {
+        const prereq = lessonToNodeId.get(prereqId);
+        if (prereq) {
+          edges.push({
+            id: `edge-${prereq.nodeId}-${nodeId}`,
+            from: { id: prereq.nodeId, side: "bottom" },
+            to: { id: nodeId, side: "top" }
+          });
+        }
+      }
+    }
+  }
+  const canvas = { nodes, edges };
+  return JSON.stringify(canvas, null, 2);
+}
+function slugifyForCanvas(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").substring(0, 50);
+}
+
+// src/stages/stage4-generate.ts
+function getDeviceName() {
+  const platform = import_obsidian9.Platform.isDesktop ? "desktop" : import_obsidian9.Platform.isMobile ? "mobile" : "unknown";
+  return `${platform}-${Date.now()}`;
+}
+var GenerationCancelledError = class extends Error {
+  constructor() {
+    super("Generation cancelled");
+    this.name = "GenerationCancelledError";
+  }
+};
+var Stage4Runner = class {
+  constructor(options) {
+    this.abortController = new AbortController();
+    this.cancelRequested = false;
+    this.lockHeld = false;
+    this.lockReleased = false;
+    this.options = options;
+    this.lessonRecords = this.buildLessonRecords();
+    this.progress = this.createInitialProgress();
+  }
+  async run() {
+    const deviceName = getDeviceName();
+    const lockAcquired = await this.options.lockService.acquireLock(this.options.courseId, deviceName);
+    if (!lockAcquired) {
+      const lockInfo = await this.options.lockService.getLockInfo();
+      if (lockInfo) {
+        showConflictModal({
+          app: this.options.app,
+          lockInfo,
+          onCancel: () => {
+            this.options.onError(new Error("Cancelled: generation in progress on another device"));
+          }
+        });
+      } else {
+        new import_obsidian9.Notice("Could not acquire lock. Please try again.");
+        this.options.onError(new Error("Could not acquire lock"));
+      }
+      throw new Error("Could not acquire lock");
+    }
+    this.lockHeld = true;
+    try {
+      this.throwIfCancelled();
+      await this.generateAllLessons();
+      this.throwIfCancelled();
+      await this.generateMocs();
+      this.throwIfCancelled();
+      await this.generateCanvas();
+      this.throwIfCancelled();
+      await this.generateCourseIndex();
+      this.progress.completedAt = (/* @__PURE__ */ new Date()).toISOString();
+      await this.options.onProgress(this.cloneProgress());
+      await this.releaseLockOnce();
+      this.options.onComplete();
+      return this.progress;
+    } catch (error) {
+      await this.releaseLockOnce();
+      if (!(error instanceof GenerationCancelledError)) {
+        this.options.onError(error);
+      }
+      throw error;
+    }
+  }
+  async cancel() {
+    this.cancelRequested = true;
+    this.abortController.abort();
+    await this.releaseLockOnce();
+  }
+  buildLessonRecords() {
+    const records = [];
+    for (const module2 of this.options.curriculum.modules) {
+      const moduleSlug = this.slugify(module2.title);
+      const existingNames = /* @__PURE__ */ new Set();
+      const mocPath = `4-Curriculum/${moduleSlug}/${moduleSlug} MOC.md`;
+      for (const lesson of module2.lessons) {
+        const fileName = buildLessonFileName(lesson.title, existingNames);
+        records.push({
+          module: module2,
+          moduleSlug,
+          mocPath,
+          lesson,
+          lessonPath: `4-Curriculum/${moduleSlug}/${fileName}`
+        });
+      }
+    }
+    return records;
+  }
+  async generateAllLessons() {
+    for (let index = 0; index < this.lessonRecords.length; index++) {
+      this.throwIfCancelled();
+      const record = this.lessonRecords[index];
+      const progressIndex = this.progress.lessons.findIndex((lesson) => lesson.lessonId === record.lesson.id);
+      const existingProgress = progressIndex === -1 ? null : this.progress.lessons[progressIndex];
+      if (existingProgress?.status === "written") {
+        continue;
+      }
+      const relatedConcepts = this.getRelatedConcepts(record.lesson);
+      const sourceRefs = this.collectSourceRefs(relatedConcepts);
+      if (progressIndex !== -1) {
+        this.progress.lessons[progressIndex] = {
+          ...this.progress.lessons[progressIndex],
+          status: "writing",
+          sourceRefs
+        };
+        await this.options.onProgress(this.cloneProgress());
+      }
+      const lessonMarkdown = await this.generateLessonMarkdown(record.lesson, relatedConcepts);
+      this.throwIfCancelled();
+      const generationMode = this.classifyGenerationMode(sourceRefs);
+      const content = this.composeLessonFile(record, lessonMarkdown, sourceRefs, generationMode, index);
+      await this.options.writeLesson(record.lessonPath, content);
+      this.throwIfCancelled();
+      if (progressIndex !== -1) {
+        this.progress.lessons[progressIndex] = {
+          ...this.progress.lessons[progressIndex],
+          filePath: record.lessonPath,
+          status: "written",
+          sourceRefs,
+          error: void 0
+        };
+        await this.options.onProgress(this.cloneProgress());
+      }
+    }
+  }
+  async generateLessonMarkdown(lesson, relatedConcepts) {
+    const prompt = composeStage4Prompt(
+      lesson,
+      relatedConcepts,
+      this.options.contextText,
+      this.options.promptTemplate
+    );
+    const result = await this.options.openRouter.chat({
+      model: this.options.model,
+      messages: [{ role: "user", content: prompt }],
+      responseFormat: "text",
+      temperature: 0.4,
+      signal: this.abortController.signal
+    });
+    return this.validateLessonMarkdown(lesson, result.content);
+  }
+  validateLessonMarkdown(lesson, markdown) {
+    const trimmed = markdown.trim();
+    if (!trimmed) {
+      throw new Error(`Stage 4 returned empty content for lesson "${lesson.title}"`);
+    }
+    if (trimmed.startsWith("---")) {
+      throw new Error(`Stage 4 returned frontmatter for lesson "${lesson.title}"`);
+    }
+    if (!trimmed.startsWith(`# ${lesson.title}`)) {
+      throw new Error(`Stage 4 returned an invalid heading for lesson "${lesson.title}"`);
+    }
+    if (!trimmed.includes("> [!question]")) {
+      throw new Error(`Stage 4 lesson "${lesson.title}" is missing the required question callout`);
+    }
+    const wordCount = trimmed.replace(/^# .+$/m, "").trim().split(/\s+/).filter(Boolean).length;
+    const minWords = lesson.condensed ? 120 : 400;
+    const maxWords = lesson.condensed ? 250 : 900;
+    if (wordCount < minWords || wordCount > maxWords) {
+      throw new Error(
+        `Stage 4 lesson "${lesson.title}" has ${wordCount} words; expected ${minWords}-${maxWords}`
+      );
+    }
+    return trimmed;
+  }
+  composeLessonFile(record, markdown, sourceRefs, generationMode, lessonIndex) {
+    const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const frontmatter = buildFrontmatter({
+      status: "unread",
+      difficulty: record.lesson.difficulty,
+      lessonId: record.lesson.id,
+      moduleId: record.module.id,
+      sourceRefs,
+      generated_at: generatedAt,
+      generation_mode: generationMode
+    });
+    const breadcrumb = buildBreadcrumb(
+      "4-Curriculum/Course Index.md",
+      record.mocPath,
+      record.module.title
+    ).trimEnd();
+    const prevNext = buildPrevNext(
+      this.getAdjacentLesson(lessonIndex - 1),
+      this.getAdjacentLesson(lessonIndex + 1),
+      "Course Index.md"
+    ).trim();
+    return [frontmatter, breadcrumb, "", markdown, "", prevNext, ""].join("\n");
+  }
+  getAdjacentLesson(index) {
+    if (index < 0 || index >= this.lessonRecords.length) {
+      return null;
+    }
+    const record = this.lessonRecords[index];
+    return {
+      title: record.lesson.title,
+      filePath: record.lessonPath
+    };
+  }
+  async generateMocs() {
+    for (const module2 of this.options.curriculum.modules) {
+      const moduleSlug = this.slugify(module2.title);
+      const mocPath = `4-Curriculum/${moduleSlug}/${moduleSlug} MOC.md`;
+      const lessons = this.lessonRecords.filter((record) => record.module.id === module2.id).map((record) => ({
+        title: record.lesson.title,
+        filePath: record.lessonPath
+      }));
+      await this.options.writeMoc(mocPath, buildMoc(module2.title, lessons));
+    }
+  }
+  async generateCanvas() {
+    const canvasPath = "4-Curriculum/course.canvas";
+    await this.options.writeCanvas(canvasPath, generateCanvas(this.options.curriculum));
+    this.progress.canvasPath = canvasPath;
+  }
+  async generateCourseIndex() {
+    const indexPath = "4-Curriculum/Course Index.md";
+    const modules = this.options.curriculum.modules.map((module2) => {
+      const moduleSlug = this.slugify(module2.title);
+      return {
+        title: module2.title,
+        mocPath: `4-Curriculum/${moduleSlug}/${moduleSlug} MOC.md`,
+        lessonCount: module2.lessons.length
+      };
+    });
+    await this.options.writeCourseIndex(indexPath, buildCourseIndex(this.options.curriculum.title, modules));
+    this.progress.indexPath = indexPath;
+  }
+  getRelatedConcepts(lesson) {
+    return this.options.concepts.filter((concept) => lesson.relatedConceptIds.includes(concept.id));
+  }
+  collectSourceRefs(concepts) {
+    return Array.from(new Set(concepts.flatMap((concept) => concept.sourceRefs))).sort();
+  }
+  classifyGenerationMode(sourceRefs) {
+    if (isKnowledgeOnlyPlaceholder(this.options.contextText)) {
+      return "knowledge-only";
+    }
+    return sourceRefs.length > 0 ? "grounded" : "augmented";
+  }
+  cloneProgress() {
+    return {
+      ...this.progress,
+      lessons: this.progress.lessons.map((lesson) => ({ ...lesson }))
+    };
+  }
+  fileStem(path) {
+    const fileName = path.split("/").pop() || path;
+    return fileName.replace(/\.md$/, "");
+  }
+  slugify(text) {
+    return text.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").substring(0, 50);
+  }
+  getProgress() {
+    return this.cloneProgress();
+  }
+  createInitialProgress() {
+    const initial = this.options.initialProgress;
+    const priorLessons = new Map((initial?.lessons ?? []).map((lesson) => [lesson.lessonId, lesson]));
+    return {
+      courseId: this.options.courseId,
+      lessons: this.lessonRecords.map((record) => {
+        const prior = priorLessons.get(record.lesson.id);
+        return {
+          lessonId: record.lesson.id,
+          filePath: record.lessonPath,
+          status: prior?.status === "written" ? "written" : "pending",
+          error: prior?.status === "error" ? prior.error : void 0,
+          sourceRefs: prior?.sourceRefs ?? []
+        };
+      }),
+      canvasPath: initial?.canvasPath,
+      indexPath: initial?.indexPath,
+      startedAt: initial?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: initial?.completedAt
+    };
+  }
+  throwIfCancelled() {
+    if (this.cancelRequested || this.abortController.signal.aborted) {
+      throw new GenerationCancelledError();
+    }
+  }
+  async releaseLockOnce() {
+    if (!this.lockHeld || this.lockReleased) {
+      return;
+    }
+    this.lockReleased = true;
+    await this.options.lockService.releaseLock();
+  }
+};
+
+// src/ui/syllabus-editor-view.ts
+var import_obsidian10 = require("obsidian");
+var SyllabusEditor = class {
+  constructor(options) {
+    this.modules = [];
+    this.container = options.container;
+    this.curriculum = JSON.parse(JSON.stringify(options.curriculum));
+    this.onSave = options.onSave;
+    this.onCancel = options.onCancel;
+    this.render();
+  }
+  render() {
+    this.container.empty();
+    const header = this.container.createDiv("syllabus-header");
+    header.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;";
+    header.createEl("h2", { text: this.curriculum.title || "Edit Curriculum" });
+    const buttonRow = header.createDiv("button-row");
+    buttonRow.style.display = "flex";
+    buttonRow.style.gap = "8px";
+    const finalizeBtn = buttonRow.createEl("button", { text: "Finalize" });
+    finalizeBtn.style.cssText = `
+      background: var(--interactive-accent);
+      color: var(--text-on-accent);
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+    `;
+    finalizeBtn.addEventListener("click", () => this.handleFinalize());
+    const cancelBtn = buttonRow.createEl("button", { text: "Cancel" });
+    cancelBtn.style.cssText = `
+      background: transparent;
+      border: 1px solid var(--border-color);
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      min-height: 48px;
+    `;
+    cancelBtn.addEventListener("click", () => this.onCancel());
+    const modulesContainer = this.container.createDiv("modules-container");
+    modulesContainer.style.cssText = "display: flex; flex-direction: column; gap: 24px;";
+    for (let i = 0; i < this.curriculum.modules.length; i++) {
+      const moduleEl = this.renderModule(this.curriculum.modules[i], i);
+      modulesContainer.appendChild(moduleEl);
+    }
+  }
+  renderModule(module2, moduleIndex) {
+    const moduleEl = document.createElement("div");
+    moduleEl.className = "module";
+    moduleEl.style.cssText = `
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--background-secondary);
+    `;
+    const header = moduleEl.createDiv("module-header");
+    header.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;";
+    const titleInput = header.createEl("input", { type: "text", value: module2.title });
+    titleInput.style.cssText = `
+      font-size: 16px;
+      font-weight: bold;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 4px 8px;
+      background: transparent;
+      color: var(--text);
+      flex: 1;
+    `;
+    titleInput.addEventListener("change", () => {
+      module2.title = titleInput.value;
+    });
+    const deleteModuleBtn = header.createEl("button", { text: "\u2715" });
+    deleteModuleBtn.style.cssText = `
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 18px;
+      padding: 8px 12px;
+      min-width: 48px;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+    deleteModuleBtn.addEventListener("click", () => {
+      moduleEl.remove();
+      this.curriculum.modules.splice(moduleIndex, 1);
+    });
+    const lessonsContainer = moduleEl.createDiv("lessons-container");
+    lessonsContainer.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+    for (let j = 0; j < module2.lessons.length; j++) {
+      const lessonEl = this.renderLesson(module2.lessons[j], module2, j);
+      lessonsContainer.appendChild(lessonEl);
+    }
+    const addLessonBtn = lessonsContainer.createEl("button", { text: "+ Add Lesson" });
+    addLessonBtn.style.cssText = `
+      background: transparent;
+      border: 1px dashed var(--border-color);
+      border-radius: 4px;
+      padding: 8px;
+      cursor: pointer;
+      color: var(--text-muted);
+      min-height: 48px;
+    `;
+    addLessonBtn.addEventListener("click", () => {
+      const newLesson = {
+        id: `lesson-${Date.now()}`,
+        title: "New Lesson",
+        summary: "",
+        prerequisiteLessonIds: [],
+        relatedConceptIds: [],
+        difficulty: "intro",
+        condensed: false
+      };
+      module2.lessons.push(newLesson);
+      const lessonEl = this.renderLesson(newLesson, module2, module2.lessons.length - 1);
+      lessonsContainer.insertBefore(lessonEl, addLessonBtn);
+    });
+    return moduleEl;
+  }
+  renderLesson(lesson, module2, lessonIndex) {
+    const lessonEl = document.createElement("div");
+    lessonEl.className = "lesson";
+    lessonEl.style.cssText = `
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      background: var(--background);
+    `;
+    const dragHandle = lessonEl.createEl("span", { text: "\u2630" });
+    dragHandle.style.cssText = `
+      cursor: grab;
+      color: var(--text-muted);
+      font-size: 14px;
+      min-width: 24px;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+    `;
+    const checkbox = lessonEl.createEl("input", { type: "checkbox" });
+    checkbox.checked = !lesson.condensed;
+    checkbox.style.cssText = "width: 18px; height: 18px; cursor: pointer;";
+    checkbox.addEventListener("change", () => {
+      lesson.condensed = !checkbox.checked;
+    });
+    const titleInput = lessonEl.createEl("input", { type: "text", value: lesson.title });
+    titleInput.style.cssText = `
+      flex: 1;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 4px 8px;
+      background: transparent;
+      color: var(--text);
+      min-height: 48px;
+    `;
+    titleInput.addEventListener("change", () => {
+      lesson.title = titleInput.value;
+    });
+    const difficultyChip = lessonEl.createEl("span", { text: lesson.difficulty });
+    difficultyChip.style.cssText = `
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      background: var(--interactive-accent);
+      color: var(--text-on-accent);
+      text-transform: capitalize;
+    `;
+    const deleteBtn = lessonEl.createEl("button", { text: "\u2715" });
+    deleteBtn.style.cssText = `
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 8px 12px;
+      min-width: 48px;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+    deleteBtn.addEventListener("click", () => {
+      lessonEl.remove();
+      module2.lessons.splice(lessonIndex, 1);
+    });
+    return lessonEl;
+  }
+  handleFinalize() {
+    this.onSave(this.curriculum);
+  }
+};
+function createSyllabusEditor(options) {
+  return new SyllabusEditor(options);
+}
+
+// src/ui/progress-view.ts
+var ProgressView = class {
+  constructor(options) {
+    this.progressBar = null;
+    this.statusEl = null;
+    this.container = options.container;
+    this.progress = options.progress;
+    this.onCancel = options.onCancel;
+    this.render();
+  }
+  render() {
+    this.container.empty();
+    const coverMode = isCoverMode(document.body.offsetWidth);
+    this.container.createEl("h2", { text: "Generating Curriculum" });
+    const totalLessons = this.progress.lessons.length;
+    if (totalLessons === 0) {
+      this.renderLoadingState(coverMode);
+      return;
+    }
+    if (this.hasError()) {
+      this.renderErrorState();
+      return;
+    }
+    this.renderProgressContent();
+  }
+  renderLoadingState(coverMode) {
+    const loadingEl = this.container.createDiv("loading-state");
+    loadingEl.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: ${coverMode ? "32px 16px" : "48px 24px"};
+      text-align: center;
+      min-height: 200px;
+    `;
+    const spinner = loadingEl.createEl("span", { text: "\u27F3" });
+    spinner.style.cssText = `
+      font-size: 32px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+    `;
+    const loadingText = loadingEl.createEl("p", { text: "Preparing your curriculum..." });
+    loadingText.style.cssText = `
+      color: var(--text-muted);
+      margin: 16px 0 0 0;
+      font-size: 14px;
+    `;
+    const cancelBtn = this.container.createEl("button", { text: "Cancel Generation" });
+    cancelBtn.style.cssText = `
+      background: transparent;
+      border: 1px solid var(--text-error);
+      color: var(--text-error);
+      padding: 12px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 24px;
+      min-height: 48px;
+      min-width: 160px;
+      font-size: 14px;
+    `;
+    cancelBtn.addEventListener("click", () => this.onCancel());
+    this.injectSpinAnimation();
+  }
+  renderErrorState() {
+    const errorEl = this.container.createDiv("error-state");
+    errorEl.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      text-align: center;
+      min-height: 200px;
+    `;
+    const errorIcon = errorEl.createEl("span", { text: "\u26A0" });
+    errorIcon.style.cssText = `
+      font-size: 48px;
+      color: var(--text-error);
+      margin-bottom: 16px;
+    `;
+    const errorTitle = errorEl.createEl("h3", { text: "Generation Failed" });
+    errorTitle.style.cssText = `
+      color: var(--text-error);
+      margin: 0 0 8px 0;
+    `;
+    const errorMessage = errorEl.createEl("p", { text: this.getErrorMessage() });
+    errorMessage.style.cssText = `
+      color: var(--text-muted);
+      margin: 0 0 24px 0;
+      font-size: 14px;
+      max-width: 400px;
+    `;
+    const retryBtn = this.container.createEl("button", { text: "Retry" });
+    retryBtn.style.cssText = `
+      background: var(--interactive-accent);
+      color: var(--text-on-accent);
+      border: none;
+      padding: 12px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      min-height: 48px;
+      min-width: 120px;
+      font-size: 14px;
+    `;
+    retryBtn.addEventListener("click", () => {
+      this.container.empty();
+      this.render();
+    });
+    const cancelBtn = this.container.createEl("button", { text: "Cancel" });
+    cancelBtn.style.cssText = `
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 12px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 8px;
+      min-height: 48px;
+      min-width: 120px;
+      font-size: 14px;
+    `;
+    cancelBtn.addEventListener("click", () => this.onCancel());
+  }
+  renderProgressContent() {
+    this.statusEl = this.container.createDiv("generation-status");
+    this.statusEl.style.marginBottom = "16px";
+    const totalLessons = this.progress.lessons.length;
+    const writtenLessons = this.progress.lessons.filter((l) => l.status === "written").length;
+    const currentLesson = this.progress.lessons.find((l) => l.status === "writing");
+    this.statusEl.textContent = `Generating ${writtenLessons + 1} of ${totalLessons}...`;
+    this.progressBar = this.container.createDiv("progress-bar");
+    this.progressBar.style.cssText = `
+      width: 100%;
+      height: 8px;
+      background: var(--background-modifier-border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    `;
+    const fill = this.progressBar.createDiv("progress-fill");
+    fill.style.cssText = `
+      height: 100%;
+      background: var(--interactive-accent);
+      width: ${writtenLessons / totalLessons * 100}%;
+      transition: width 0.3s ease;
+    `;
+    const lessonsList = this.container.createDiv("lessons-list");
+    lessonsList.style.cssText = `
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+    `;
+    for (const lesson of this.progress.lessons) {
+      const item = lessonsList.createDiv("lesson-item");
+      item.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border-bottom: 1px solid var(--border-color);
+        min-height: 48px;
+      `;
+      const statusIcon = item.createEl("span");
+      switch (lesson.status) {
+        case "written":
+          statusIcon.textContent = "\u2713";
+          statusIcon.style.color = "var(--text-success)";
+          break;
+        case "writing":
+          statusIcon.textContent = "\u27F3";
+          statusIcon.style.color = "var(--interactive-accent)";
+          break;
+        case "error":
+          statusIcon.textContent = "\u2717";
+          statusIcon.style.color = "var(--text-error)";
+          break;
+        default:
+          statusIcon.textContent = "\u25CB";
+          statusIcon.style.color = "var(--text-muted)";
+      }
+      const title = item.createEl("span", { text: lesson.lessonId });
+      title.style.flex = "1";
+      if (lesson.status === "error" && lesson.error) {
+        const errorMsg = item.createEl("span", { text: lesson.error });
+        errorMsg.style.color = "var(--text-error)";
+        errorMsg.style.fontSize = "12px";
+      }
+    }
+    const cancelBtn = this.container.createEl("button", { text: "Cancel Generation" });
+    cancelBtn.style.cssText = `
+      background: transparent;
+      border: 1px solid var(--text-error);
+      color: var(--text-error);
+      padding: 12px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 16px;
+      min-height: 48px;
+      min-width: 160px;
+      font-size: 14px;
+    `;
+    cancelBtn.addEventListener("click", () => this.onCancel());
+  }
+  hasError() {
+    return this.progress.lessons.some((l) => l.status === "error");
+  }
+  getErrorMessage() {
+    const errorLesson = this.progress.lessons.find((l) => l.status === "error");
+    return errorLesson?.error || "An unexpected error occurred during curriculum generation.";
+  }
+  injectSpinAnimation() {
+    if (document.querySelector("#curricula-spin-animation"))
+      return;
+    const style = document.createElement("style");
+    style.id = "curricula-spin-animation";
+    style.textContent = `
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+  update(progress) {
+    this.progress = progress;
+    if (this.progressBar) {
+      const totalLessons = this.progress.lessons.length;
+      if (totalLessons > 0) {
+        const writtenLessons = this.progress.lessons.filter((l) => l.status === "written").length;
+        const fill = this.progressBar.querySelector(".progress-fill");
+        if (fill) {
+          fill.style.width = `${writtenLessons / totalLessons * 100}%`;
+        }
+      }
+    }
+    if (this.statusEl) {
+      const totalLessons = this.progress.lessons.length;
+      if (totalLessons > 0) {
+        const writtenLessons = this.progress.lessons.filter((l) => l.status === "written").length;
+        this.statusEl.textContent = `Generating ${writtenLessons + 1} of ${totalLessons}...`;
+      }
+    }
+  }
+};
+function createProgressView(options) {
+  return new ProgressView(options);
+}
+
+// src/ui/resume-modal.ts
+var import_obsidian11 = require("obsidian");
+var ResumePromptModal = class extends import_obsidian11.Modal {
+  constructor(app, options) {
+    super(app);
+    this.courseLabel = options.courseLabel;
+    this.stageLabel = options.stageLabel;
+    this.onResume = options.onResume;
+    this.onDismiss = options.onDismiss;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Resume course" });
+    contentEl.createEl("p", {
+      text: `Resume ${this.courseLabel} from ${this.stageLabel}?`
+    });
+    const buttonRow = contentEl.createDiv();
+    buttonRow.style.cssText = "display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px;";
+    const dismissButton = new import_obsidian11.ButtonComponent(buttonRow);
+    dismissButton.setButtonText("Later");
+    dismissButton.onClick(() => {
+      this.close();
+      this.onDismiss();
+    });
+    const resumeButton = new import_obsidian11.ButtonComponent(buttonRow);
+    resumeButton.setButtonText("Resume");
+    resumeButton.setCta();
+    resumeButton.onClick(() => {
+      this.close();
+      this.onResume();
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
 // src/plugin.ts
-var CurriculaPlugin = class extends import_obsidian3.Plugin {
+var DEFAULT_MODEL = "anthropic/claude-3.5-haiku";
+var DEFAULT_MODEL_CONTEXT_LENGTH = 32e3;
+var CurriculaPlugin = class extends import_obsidian12.Plugin {
   async onLoad() {
-    this.settings = loadSettings(this);
+    this.settings = await loadSettings(this);
     this.settingsTab = new CurriculaSettingsTab(this.app, this, this.settings);
     this.addSettingTab(this.settingsTab);
     this.openRouter = new OpenRouterService({
       apiKey: this.settings.openRouterApiKey,
       baseUrl: OPENROUTER_BASE_URL
     });
+    this.openRouter.hydrateModelsCache(this.settings._modelsCache);
     this.cacheService = new CacheService(this.app.vault.adapter, this.manifest.dir || "");
     this.lockService = new LockService(this.app.vault, this.app.vault.adapter);
     this.contextBuilder = new ContextBuilder(this.app.vault);
@@ -4656,13 +6761,317 @@ var CurriculaPlugin = class extends import_obsidian3.Plugin {
       id: "auto-tutor:start-new-course",
       name: "Start New Course",
       callback: () => {
-        new import_obsidian3.Notice("Start New Course - coming soon");
+        void this.startNewCourse();
       }
     });
     this.addRibbonIcon("graduation-cap", "Start New Course", () => {
-      new import_obsidian3.Notice("Start New Course - coming soon");
+      void this.startNewCourse();
     });
     await this.checkForInProgressCourses();
+  }
+  async applySettings(settings) {
+    this.settings = {
+      ...settings,
+      promptOverrides: {
+        ...settings.promptOverrides
+      }
+    };
+    if (this.openRouter) {
+      this.openRouter.updateConfig({
+        apiKey: this.settings.openRouterApiKey,
+        baseUrl: OPENROUTER_BASE_URL
+      });
+      this.openRouter.hydrateModelsCache(this.settings._modelsCache);
+    }
+    await this.saveData(this.settings);
+  }
+  async startNewCourse() {
+    const courseId = this.createCourseId();
+    const cache = this.createInitialCache(courseId);
+    try {
+      await this.cacheService.writeMeta(courseId, cache.meta);
+      const taxonomy = await runStage0(
+        this.app,
+        this.openRouter,
+        this.contextBuilder,
+        courseId,
+        {
+          model: this.getActiveModel(),
+          promptTemplate: this.getPromptTemplate("stage0")
+        }
+      );
+      if (!taxonomy) {
+        return;
+      }
+      cache.meta.seedTopic = taxonomy.root.title;
+      await this.persistStage(cache, 0, taxonomy);
+      const concepts = await this.runStage1Flow(courseId, taxonomy);
+      if (!concepts) {
+        return;
+      }
+      await this.persistStage(cache, 1, concepts);
+      const proficiency = await runStage2({
+        app: this.app,
+        concepts,
+        courseId,
+        onComplete: () => void 0,
+        onError: () => void 0
+      });
+      if (!proficiency) {
+        return;
+      }
+      await this.persistStage(cache, 2, proficiency);
+      const draftCurriculum = await this.runStage3Flow(courseId, taxonomy, concepts, proficiency);
+      if (!draftCurriculum) {
+        return;
+      }
+      const curriculum = await this.openSyllabusEditor(draftCurriculum);
+      if (!curriculum) {
+        return;
+      }
+      await this.persistStage(cache, 3, curriculum);
+      const progress = await this.runStage4Flow(cache, courseId, curriculum, concepts);
+      if (!progress) {
+        return;
+      }
+      await this.persistStage(cache, 4, progress);
+      new import_obsidian12.Notice(`Course ready: ${curriculum.title}`);
+    } catch (error) {
+      new import_obsidian12.Notice(`Course generation failed: ${error.message}`);
+    }
+  }
+  createInitialCache(courseId) {
+    const meta = {
+      courseId,
+      seedTopic: "",
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      lastStageCompleted: null,
+      modelUsed: this.getActiveModel()
+    };
+    return { meta };
+  }
+  getActiveModel() {
+    return this.settings.defaultModel || DEFAULT_MODEL;
+  }
+  getPromptTemplate(stage) {
+    const override = this.settings.promptOverrides[stage]?.trim();
+    return override ? override : void 0;
+  }
+  async persistStage(cache, stage, data) {
+    cache.meta.lastStageCompleted = stage;
+    if (stage === 0) {
+      cache.stage0 = data;
+    } else if (stage === 1) {
+      cache.stage1 = data;
+    } else if (stage === 2) {
+      cache.stage2 = data;
+    } else if (stage === 3) {
+      cache.stage3 = data;
+    } else {
+      cache.stage4 = data;
+    }
+    await this.cacheService.writeMeta(cache.meta.courseId, cache.meta);
+    await this.cacheService.writeStage(cache.meta.courseId, stage, data, cache);
+  }
+  async runStage1Flow(courseId, taxonomy) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(result);
+      };
+      void runStage1({
+        app: this.app,
+        openRouter: this.openRouter,
+        contextBuilder: this.contextBuilder,
+        taxonomy,
+        courseId,
+        model: this.getActiveModel(),
+        modelContextLength: DEFAULT_MODEL_CONTEXT_LENGTH,
+        promptTemplate: this.getPromptTemplate("stage1"),
+        onComplete: (concepts) => finish(concepts),
+        onError: () => finish(null)
+      }).then((result) => {
+        if (result) {
+          finish(result);
+        }
+      }).catch(() => {
+        finish(null);
+      });
+    });
+  }
+  async runStage3Flow(courseId, taxonomy, concepts, proficiency) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(result);
+      };
+      void runStage3({
+        app: this.app,
+        openRouter: this.openRouter,
+        contextBuilder: this.contextBuilder,
+        lockService: this.lockService,
+        taxonomy,
+        concepts,
+        proficiency,
+        courseId,
+        model: this.getActiveModel(),
+        modelContextLength: DEFAULT_MODEL_CONTEXT_LENGTH,
+        promptTemplate: this.getPromptTemplate("stage3"),
+        onComplete: (curriculum) => finish(curriculum),
+        onError: () => finish(null)
+      }).then((result) => {
+        if (result) {
+          finish(result);
+        }
+      }).catch(() => {
+        finish(null);
+      });
+    });
+  }
+  async openSyllabusEditor(curriculum) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const modal = new import_obsidian12.Modal(this.app);
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        modal.close();
+        resolve(result);
+      };
+      modal.onOpen = () => {
+        createSyllabusEditor({
+          container: modal.contentEl,
+          curriculum,
+          onSave: (updatedCurriculum) => finish(updatedCurriculum),
+          onCancel: () => finish(null)
+        });
+      };
+      modal.onClose = () => {
+        if (!settled) {
+          settled = true;
+          resolve(null);
+        }
+      };
+      modal.open();
+    });
+  }
+  async runStage4Flow(cache, courseId, curriculum, concepts, initialProgress) {
+    const context = await this.contextBuilder.buildContext(DEFAULT_MODEL_CONTEXT_LENGTH);
+    let runner = null;
+    const modal = new import_obsidian12.Modal(this.app);
+    const closeAfterCancel = async () => {
+      if (!runner) {
+        modal.close();
+        return;
+      }
+      await runner.cancel();
+      modal.close();
+    };
+    runner = new Stage4Runner({
+      app: this.app,
+      openRouter: this.openRouter,
+      courseId,
+      curriculum,
+      concepts: concepts.concepts,
+      contextText: context.text,
+      model: this.getActiveModel(),
+      promptTemplate: this.getPromptTemplate("stage4"),
+      lockService: this.lockService,
+      initialProgress,
+      writeLesson: async (filePath, content) => {
+        await this.writeVaultFile(filePath, content);
+      },
+      writeMoc: async (filePath, content) => {
+        await this.writeVaultFile(filePath, content);
+      },
+      writeCanvas: async (filePath, content) => {
+        await this.writeVaultFile(filePath, content);
+      },
+      writeCourseIndex: async (filePath, content) => {
+        await this.writeVaultFile(filePath, content);
+      },
+      onProgress: async (nextProgress) => {
+        view.update(nextProgress);
+        await this.persistStage(cache, 4, nextProgress);
+      },
+      onComplete: () => {
+        modal.close();
+      },
+      onError: (error) => {
+        new import_obsidian12.Notice(`Generation failed: ${error.message}`);
+      }
+    });
+    let view = createProgressView({
+      container: modal.contentEl,
+      progress: runner.getProgress(),
+      onCancel: () => {
+        void closeAfterCancel();
+      }
+    });
+    modal.onOpen = () => {
+      view = createProgressView({
+        container: modal.contentEl,
+        progress: runner?.getProgress() ?? this.createInitialProgress(courseId, curriculum),
+        onCancel: () => {
+          void closeAfterCancel();
+        }
+      });
+    };
+    modal.open();
+    try {
+      const progress = await runner.run();
+      modal.close();
+      return progress;
+    } catch (error) {
+      modal.close();
+      if (error instanceof GenerationCancelledError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+  createInitialProgress(courseId, curriculum) {
+    return {
+      courseId,
+      lessons: curriculum.modules.flatMap(
+        (module2) => module2.lessons.map((lesson) => ({
+          lessonId: lesson.id,
+          filePath: "",
+          status: "pending",
+          sourceRefs: []
+        }))
+      ),
+      startedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  async writeVaultFile(path, content) {
+    await this.ensureFolder(path.split("/").slice(0, -1));
+    const tmpPath = `${path}.tmp`;
+    await this.app.vault.adapter.write(tmpPath, content);
+    await this.app.vault.adapter.rename(tmpPath, path);
+  }
+  async ensureFolder(parts) {
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      try {
+        await this.app.vault.adapter.mkdir(current);
+      } catch {
+      }
+    }
+  }
+  createCourseId() {
+    return `course-${Date.now()}`;
   }
   async checkForInProgressCourses() {
     try {
@@ -4670,17 +7079,97 @@ var CurriculaPlugin = class extends import_obsidian3.Plugin {
       for (const courseId of courseIds) {
         const resumeInfo = await this.cacheService.resumeFrom(courseId);
         if (resumeInfo) {
-          const lockInfo = await this.lockService.getLockInfo();
-          if (lockInfo && lockInfo.courseId === courseId) {
-            const isStale = Date.now() - lockInfo.startedAt >= 30 * 60 * 1e3;
-            if (!isStale) {
-              new import_obsidian3.Notice(`Resume course: ${courseId}? Generation in progress on ${lockInfo.deviceName}`);
-            }
+          const shouldResume = await this.promptResumeCourse(resumeInfo.cache.meta, resumeInfo.nextStage);
+          if (shouldResume) {
+            await this.resumeCourse(resumeInfo);
+            break;
           }
         }
       }
     } catch {
     }
+  }
+  async promptResumeCourse(meta, nextStage) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const modal = new ResumePromptModal(this.app, {
+        courseLabel: meta.seedTopic || meta.courseId,
+        stageLabel: this.getStageLabel(nextStage),
+        onResume: () => {
+          settled = true;
+          resolve(true);
+        },
+        onDismiss: () => {
+          settled = true;
+          resolve(false);
+        }
+      });
+      modal.onClose = () => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      };
+      modal.open();
+    });
+  }
+  getStageLabel(stage) {
+    const stageNames = {
+      0: "Stage 0: Topic Explorer",
+      1: "Stage 1: Concept Extraction",
+      2: "Stage 2: Diagnostic",
+      3: "Stage 3: Curriculum Design",
+      4: "Stage 4: Content Generation"
+    };
+    return stageNames[stage];
+  }
+  async resumeCourse(resumeInfo) {
+    const { nextStage, cache } = resumeInfo;
+    const courseId = cache.meta.courseId;
+    if (nextStage === 0 || !cache.stage0) {
+      new import_obsidian12.Notice(`Cannot resume ${courseId}: Stage 0 input was never completed.`);
+      return;
+    }
+    let concepts = cache.stage1 ?? null;
+    if (nextStage <= 1 || !concepts) {
+      concepts = await this.runStage1Flow(courseId, cache.stage0);
+      if (!concepts) {
+        return;
+      }
+      await this.persistStage(cache, 1, concepts);
+    }
+    let proficiency = cache.stage2 ?? null;
+    if (nextStage <= 2 || !proficiency) {
+      proficiency = await runStage2({
+        app: this.app,
+        concepts,
+        courseId,
+        onComplete: () => void 0,
+        onError: () => void 0
+      });
+      if (!proficiency) {
+        return;
+      }
+      await this.persistStage(cache, 2, proficiency);
+    }
+    let curriculum = cache.stage3 ?? null;
+    if (nextStage <= 3 || !curriculum) {
+      const draftCurriculum = await this.runStage3Flow(courseId, cache.stage0, concepts, proficiency);
+      if (!draftCurriculum) {
+        return;
+      }
+      curriculum = await this.openSyllabusEditor(draftCurriculum);
+      if (!curriculum) {
+        return;
+      }
+      await this.persistStage(cache, 3, curriculum);
+    }
+    const progress = await this.runStage4Flow(cache, courseId, curriculum, concepts, cache.stage4);
+    if (!progress) {
+      return;
+    }
+    await this.persistStage(cache, 4, progress);
+    new import_obsidian12.Notice(`Course ready: ${curriculum.title}`);
   }
 };
 

@@ -25,9 +25,14 @@ export interface LlmModel {
   contextLength: number;
 }
 
+export interface ModelsCacheSnapshot {
+  data: LlmModel[];
+  cachedAt: number;
+}
+
 export interface LlmService {
   chat(opts: ChatOptions): Promise<ChatResult>;
-  listModels(): Promise<LlmModel[]>;
+  listModels(options?: { forceRefresh?: boolean }): Promise<LlmModel[]>;
 }
 
 export class LlmError extends Error {
@@ -49,7 +54,7 @@ function isRetriable(status: number): boolean {
 export class OpenRouterService implements LlmService {
   private apiKey: string;
   private baseUrl: string;
-  private modelsCache: { data: LlmModel[]; cachedAt: number } | null = null;
+  private modelsCache: ModelsCacheSnapshot | null = null;
   private readonly CACHE_TTL_MS = 60 * 60 * 1000;
 
   constructor(opts: { apiKey: string; baseUrl: string }) {
@@ -57,8 +62,37 @@ export class OpenRouterService implements LlmService {
     this.baseUrl = opts.baseUrl;
   }
 
-  async listModels(): Promise<LlmModel[]> {
-    if (this.modelsCache && Date.now() - this.modelsCache.cachedAt < this.CACHE_TTL_MS) {
+  updateConfig(opts: { apiKey?: string; baseUrl?: string }): void {
+    const apiKeyChanged = opts.apiKey !== undefined && opts.apiKey !== this.apiKey;
+    const baseUrlChanged = opts.baseUrl !== undefined && opts.baseUrl !== this.baseUrl;
+
+    if (opts.apiKey !== undefined) {
+      this.apiKey = opts.apiKey;
+    }
+
+    if (opts.baseUrl !== undefined) {
+      this.baseUrl = opts.baseUrl;
+    }
+
+    if (apiKeyChanged || baseUrlChanged) {
+      this.modelsCache = null;
+    }
+  }
+
+  hydrateModelsCache(cache: ModelsCacheSnapshot | null): void {
+    this.modelsCache = cache;
+  }
+
+  getModelsCache(): ModelsCacheSnapshot | null {
+    return this.modelsCache;
+  }
+
+  async listModels(options?: { forceRefresh?: boolean }): Promise<LlmModel[]> {
+    if (
+      !options?.forceRefresh &&
+      this.modelsCache &&
+      Date.now() - this.modelsCache.cachedAt < this.CACHE_TTL_MS
+    ) {
       return this.modelsCache.data;
     }
 

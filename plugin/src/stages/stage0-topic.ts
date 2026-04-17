@@ -13,6 +13,8 @@ export interface Stage0Options {
   contextBuilder: ContextBuilder;
   seedTopic: string;
   courseId: CourseId;
+  model: string;
+  promptTemplate?: string;
   onComplete: (taxonomy: ScopedTaxonomy) => void;
   onCancel: () => void;
 }
@@ -23,6 +25,8 @@ export class Stage0Runner {
   private contextBuilder: ContextBuilder;
   private seedTopic: string;
   private courseId: CourseId;
+  private model: string;
+  private promptTemplate?: string;
   private onComplete: (taxonomy: ScopedTaxonomy) => void;
   private onCancel: () => void;
 
@@ -35,6 +39,8 @@ export class Stage0Runner {
     this.contextBuilder = options.contextBuilder;
     this.seedTopic = options.seedTopic;
     this.courseId = options.courseId;
+    this.model = options.model;
+    this.promptTemplate = options.promptTemplate;
     this.onComplete = options.onComplete;
     this.onCancel = options.onCancel;
   }
@@ -43,10 +49,10 @@ export class Stage0Runner {
     new Notice('Generating taxonomy...');
 
     try {
-      const prompt = composeStage0Prompt(this.seedTopic);
+      const prompt = composeStage0Prompt(this.seedTopic, this.promptTemplate);
 
       const result = await this.openRouter.chat({
-        model: 'anthropic/claude-3.5-haiku',
+        model: this.model,
         messages: [{ role: 'user', content: prompt }],
         responseFormat: 'json_object',
       });
@@ -57,7 +63,7 @@ export class Stage0Runner {
       } catch {
         const retryPrompt = `Your previous response was not valid JSON. Return valid JSON only: ${result.content}`;
         const retryResult = await this.openRouter.chat({
-          model: 'anthropic/claude-3.5-haiku',
+          model: this.model,
           messages: [{ role: 'user', content: retryPrompt }],
           responseFormat: 'json_object',
         });
@@ -139,7 +145,8 @@ export async function runStage0(
   app: App,
   openRouter: OpenRouterService,
   contextBuilder: ContextBuilder,
-  courseId: CourseId
+  courseId: CourseId,
+  config?: { model?: string; promptTemplate?: string }
 ): Promise<ScopedTaxonomy | null> {
   return new Promise((resolve) => {
     let runner: Stage0Runner | null = null;
@@ -151,6 +158,8 @@ export async function runStage0(
         contextBuilder,
         seedTopic,
         courseId,
+        model: config?.model ?? 'anthropic/claude-3.5-haiku',
+        promptTemplate: config?.promptTemplate,
         onComplete: (taxonomy) => resolve(taxonomy),
         onCancel: () => resolve(null),
       });
