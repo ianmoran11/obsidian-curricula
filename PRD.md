@@ -817,7 +817,7 @@ If any of the applicable requirements above fails, leave the checkbox unticked, 
 
 - [x] 29. Prepare BRAT release. Fill out `plugin/manifest.json` final fields, write `plugin/versions.json`, add a root `README.md` with installation instructions (BRAT: add repo, install, enable). Add a GitHub Actions workflow `.github/workflows/release.yml` that on tag `v*` builds the plugin and creates a GitHub Release with `main.js`, `manifest.json`, `styles.css`. **Acceptance:** F15 (test locally with `act` or a real dry-run tag `v0.0.1-rc1`).
 
-- [ ] 30. Final verification and release pass: run the full verification workflow, confirm the three modes are covered by tests where relevant, and complete release prep. **Acceptance:** every F* in §14 checked; `scripts/verify.sh` passes; final Release tag pushed.
+- [x] 30. Final verification and release pass: run the full verification workflow, confirm the three modes are covered by tests where relevant, and complete release prep. **Acceptance:** every F* in §14 checked; `scripts/verify.sh` passes; final Release tag pushed.
 
 ---
 

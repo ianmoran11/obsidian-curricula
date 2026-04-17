@@ -365,3 +365,11 @@ Input-tokens: 28808
 Output-tokens: 6075
 Cache-tokens: 978020
 
+## Task 30: Final verification and release pass
+- verify.sh passes (lint: 0 errors, 16 warnings; typecheck passes; 162 tests pass)
+- All 29 previous tasks completed
+- First commit created (37c0b26)
+- Release tag v0.1.0 pushed
+- Task 30 marked complete in PRD.md
+Status: COMPLETE
+
