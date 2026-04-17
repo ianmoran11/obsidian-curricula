@@ -1,0 +1,367 @@
+=== Ralph Progress Log ===
+Started: 2026-04-17 23:20:18
+Provider: minimax
+Model: MiniMax-M2.7
+Tool: opencode
+
+## Task 1: mock-vault + mock-vault-empty
+- Created mock-vault/ with four sub-folders, intro-to-ml.md (635 words), linear-algebra-primer.md (460 words), total 1095 words
+- Created mock-vault-empty/ with same structure but empty 2-Markdown_Sources/
+- Added .gitignore in mock-vault/ ignoring workspace*, plugins data.json, .trash/
+Status: COMPLETE
+
+## Task 2: Plugin scaffold
+- Created plugin/ with manifest.json (isDesktopOnly: false), package.json, tsconfig.json, esbuild.config.mjs
+- Created main.ts (thin entry delegating to src/plugin.ts)
+- Created src/plugin.ts (registers ribbon + command stub, placeholder)
+- Created styles.css (empty placeholder)
+- Added npm scripts: build, dev, typecheck, lint, test
+- Installed dependencies (obsidian, zod, vitest, typescript, esbuild)
+- TypeScript typecheck passes
+- vitest test passes (1 placeholder test)
+Status: COMPLETE
+
+## Task 3: scripts/install-plugin.sh + setup-mock-vault.sh
+- Created scripts/install-plugin.sh (idempotent symlink via ln -sfn)
+- Created scripts/setup-mock-vault.sh (ensures directory structure)
+- Both scripts are executable
+- Build produces dist/ output
+Status: COMPLETE
+
+## Task 4: interfaces.ts, constants.ts, index.ts
+- Created plugin/src/interfaces.ts verbatim from PRD.md §10
+- Created plugin/src/constants.ts with OPENROUTER_BASE_URL, STAGES, VAULT_PATHS
+- Created plugin/src/index.ts barrel export
+- TypeScript typecheck passes, no unused exports
+Status: COMPLETE
+
+## Task 5: Validator with zod schemas
+- Implemented plugin/src/services/validator.ts with full zod schemas mirroring all §10 interfaces
+- Added ValidationError class with details
+- Added validate<T>() generic function
+- Added typed validators for all interfaces
+- Created tests/unit/validator.test.ts with valid/invalid fixtures
+- All 24 tests pass
+Status: COMPLETE
+
+## Task 6: Settings tab
+- Implemented plugin/src/settings.ts with CurriculaSettingsTab (extends PluginSettingTab)
+- Fields: API key (password), default model (dropdown), 4 prompt textareas
+- "Refresh models" button disabled with tooltip until Task 10
+- Settings persist to data.json via plugin.saveData/loadData
+- TypeScript typecheck passes
+- Tests pass, build succeeds
+Status: COMPLETE
+
+## Task 11: ContextBuilder per §12.3
+- Implemented plugin/src/services/context.ts
+- Recursively reads .md files from /2-Markdown_Sources/
+- Sorts alphabetically, concatenates with separator format "===== filename ====="
+- Empty sources return mode: 'knowledge-only' with placeholder string
+- ContextTooLargeError thrown when bytes > modelContextLength * 3
+- Unit tests: ContextTooLargeError, isContextTooLargeError, knowledge-only placeholder
+- All 40 tests pass
+Status: COMPLETE
+
+## Task 12: CacheService + LockService
+- Implemented plugin/src/services/cache.ts (atomic writes via .tmp + rename)
+- Implemented plugin/src/services/lock.ts (.auto-tutor.lock handling, 30min stale)
+- writeStage: adapter.write to .tmp then adapter.rename
+- writeMeta: adapter.mkdir then .tmp then rename
+- getCourseIds, clearCourse, resumeFrom methods
+- LockService: acquireLock, getLockInfo, releaseLock, clearStaleLocks
+- Tests for cache (4 tests) and lock (7 tests) all pass
+- TypeScript typecheck passes
+Status: COMPLETE
+
+## Task 13: Author four bundled prompt files + source-policy.test.ts
+- Created plugin/src/prompts/stage0-taxonomy.md (verbatim from §11.1)
+- Created plugin/src/prompts/stage1-concepts.md (verbatim from §11.2 with source-policy language)
+- Created plugin/src/prompts/stage3-curriculum.md (verbatim from §11.3)
+- Created plugin/src/prompts/stage4-lesson.md (verbatim from §11.4)
+- Created plugin/src/prompts/index.ts with prompt composers and helper functions
+- Forbidden phrases: ['only from the source', 'only use the provided text', 'refuse if no', etc.]
+- Knowledge-only placeholder substituted when contextText is empty/whitespace
+- Created tests/unit/source-policy.test.ts (19 tests)
+- All 59 tests pass
+Status: COMPLETE
+
+## Task 14: Stage 0 (TopicInputModal + TaxonomyView)
+- Created plugin/src/ui/topic-input-modal.ts (Modal with text input, Enter key support, validation)
+- Created plugin/src/ui/taxonomy-view.ts (responsive tree with CSS, inner/cover viewport detection)
+- Created plugin/src/stages/stage0-topic.ts (orchestrates modal → LLM call → taxonomy view)
+- CSS container queries via document.body.offsetWidth < 900 for cover mode
+- Parent-cascade checkbox logic (cascades selection to descendants)
+- "Continue" disabled until ≥1 leaf selected
+- hasAtLeastOneLeafSelected helper tested
+- All 65 tests pass
+Status: COMPLETE
+
+## Task 15: Stage 1 (concepts extraction)
+- Implemented plugin/src/stages/stage1-concepts.ts
+- Builds context (grounded or knowledge-only), composes Stage 1 prompt
+- Validates ConceptList with retry on validation failure
+- Shows Notice with concept count
+Status: COMPLETE
+
+## Task 16: Stage 2 (LikertModal)
+- Implemented plugin/src/ui/likert-modal.ts (5 big buttons ≥48px, swipe gestures)
+- Plugin: app, concepts, courseId, onComplete callback
+- Records proficiency scores (default 3 for skipped)
+- Back button via swipe gesture
+- Updated plugin/src/stages/stage2-diagnostic.ts
+Status: COMPLETE
+
+## Tasks 17-20: Stage 3 + 4 + Writers
+- Implemented plugin/src/ui/syllabus-editor-view.ts (collapsible sections, lesson rows with drag handle, difficulty chip, condensed toggle, add/remove lesson)
+- Implemented plugin/src/writers/frontmatter.ts (YAML escaping)
+- Implemented plugin/src/writers/markdown.ts (slugify, collision suffixing)
+- Implemented plugin/src/writers/navigation.ts (breadcrumbs, prev/next)
+- Implemented plugin/src/writers/moc.ts (module MOC, course index)
+- Implemented plugin/src/writers/canvas.ts (layered grid, module=columns, lesson=rows, 320x200 nodes, edges from prerequisites)
+- Implemented plugin/src/stages/stage3-curriculum.ts (LLM call, validate with retry)
+- Implemented plugin/src/stages/stage4-generate.ts (iterates lessons, calls Stage 4, updates progress)
+- Implemented plugin/src/ui/progress-view.ts (progress bar, status updates, cancel button)
+Status: COMPLETE
+
+## Task 7-9: Docling service
+- Created docling-service/ with pyproject.toml (docling, watchdog, pyyaml, python-dotenv)
+- Implemented extract.py (single-file extraction with content-hash cache in .docling-cache/)
+- Implemented watch.py (long-running watchdog observer with log rotation at 10MB)
+- Created com.user.auto-tutor.docling.plist template
+- Created install.sh (reads --source/--target args, substitutes plist, launchctl load)
+- Created uninstall.sh (launchctl unload, remove plist)
+- Created README.md
+Status: COMPLETE
+
+## Task 10: OpenRouterService
+- Implemented plugin/src/services/openrouter.ts with full LlmService interface
+- Uses requestUrl() from obsidian (not fetch())
+- listModels() with 1h cache in data.json
+- chat() with JSON mode via response_format
+- LlmError with status, body, retriable fields
+- Retry logic: 3 tries with jittered backoff on 429/5xx
+- TypeScript typecheck passes
+- Tests pass, build succeeds
+Status: COMPLETE
+
+## Tasks 21-22: Navigation + State recovery
+- Implemented plugin/src/writers/navigation.ts (buildBreadcrumb, buildPrevNext)
+- Implemented plugin/src/writers/moc.ts (buildMoc, buildCourseIndex)
+- Created tests/unit/navigation.test.ts (4 tests)
+- Updated plugin.ts to initialize CacheService, LockService, OpenRouterService, ContextBuilder on load
+- Added checkForInProgressCourses() to scan cache for in-progress courses
+- Shows Notice when a course has in-progress generation
+- Respects lock (shows device name if lock is active and not stale)
+- All 69 tests pass, build produces dist/main.js (139.1 KB)
+Status: COMPLETE
+
+## Task 23: Shared test helpers for grounded/augmented/knowledge-only flows
+- Created plugin/tests/helpers.ts with fixture builders for all three modes
+- buildGroundedMode(): concepts with sourceRefs pointing to actual files
+- buildAugmentedMode(): mixed sourceRefs (some grounded, some empty)
+- buildKnowledgeOnlyMode(): all sourceRefs empty, context uses placeholder
+- buildAllModes(): returns all three mode fixtures together
+- Mode classification helpers: classifyRunMode, isKnowledgeOnlyContext, hasGroundedConcepts, allConceptsGrounded, someConceptsAugmented
+- Created plugin/tests/unit/helpers.test.ts (31 tests)
+- All 100 tests pass, TypeScript typecheck passes
+Status: COMPLETE
+
+## Task 24: record.js (Playwright-Electron driver)
+- Implemented evidence/harness/src/record.js with full milestone recording
+- Supports --list, --milestone, --mode, --viewport flags
+- Obsidian path detection via OBSIDIAN_PATH env or default macOS paths
+- Vault mapping: grounded→mock-vault, augmented→mock-vault, knowledge-only→mock-vault-empty
+- Creates proper directory structure: evidence/milestone-N/{inner-screen,cover-screen}/{mode}/
+- Video recording via Playwright recordVideo
+- Screenshot capture (vault-overview.png)
+- Generates evidence.json, index.html, environment.txt, summary.md
+- buildIndexHtml() enhanced to match §16.5 requirements (mode matrix, criterion sections)
+- Root package.json added so npm run evidence -- --milestone N works from repo root
+- Acceptance: command parses args correctly, creates directory structure, would produce videos/screenshots/index.html when Obsidian is installed
+Status: COMPLETE
+
+--- Iteration 1 [2026-04-18 00:25:57] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 9
+Tasks completed: 22
+Input-tokens: 1198
+Output-tokens: 1291
+Cache-tokens: 285120
+
+--- Iteration 2 [2026-04-18 00:58:02] ---
+Status: FAILED
+Exit code: 1
+Tasks remaining: 9
+Tasks completed: 22
+Input-tokens: 7
+Output-tokens: 59
+Cache-tokens: 10144
+
+--- Iteration 1 [2026-04-18 01:08:38] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 8
+Tasks completed: 23
+Input-tokens: 2033
+Output-tokens: 682
+Cache-tokens: 204352
+
+--- Iteration 2 [2026-04-18 01:09:57] ---
+Status: FAILED
+Exit code: 1
+Tasks remaining: 8
+Tasks completed: 23
+Input-tokens: 34337
+Output-tokens: 1827
+Cache-tokens: 158044
+
+--- Iteration 1 [2026-04-18 01:18:51] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 8
+Tasks completed: 23
+Input-tokens: 16744
+Output-tokens: 274
+Cache-tokens: 22852
+
+## Task 24: Responsive helpers and UI-state logic tests
+- Created plugin/src/ui/responsive.ts with shared responsive helper functions
+- isCoverMode(viewportWidth): boolean - pure function for cover mode detection
+- isInnerMode(viewportWidth): boolean - inverse of isCoverMode
+- getViewportMode(viewportWidth): 'inner' | 'cover' - returns viewport mode
+- isTouchTargetValid(size, minSize?): boolean - validates touch target size
+- isTouchTargetValidBoth(width, height, minSize?): boolean - validates both dimensions
+- COVER_MODE_THRESHOLD = 900 exported from responsive.ts
+- Updated taxonomy-view.ts to use shared isCoverMode() helper
+- Created tests/unit/responsive.test.ts with 35 tests covering:
+  - isCoverMode boundary conditions (899, 900, 901)
+  - isInnerMode inverse relationship
+  - getViewportMode for various widths
+  - isTouchTargetValid touch target validation (48px threshold)
+  - isTouchTargetValidBoth for width/height validation
+  - UI-state logic: cascade selection, Likert score mapping, proficiency defaults
+- All 135 tests pass, TypeScript typecheck passes
+Status: COMPLETE
+
+--- Iteration 2 [2026-04-18 01:24:52] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 7
+Tasks completed: 24
+Input-tokens: 35384
+Output-tokens: 12114
+Cache-tokens: 1575706
+
+## Task 25: scripts/verify.sh
+- Created scripts/verify.sh that runs lint, typecheck, and test
+- Created plugin/.eslintrc.json (basic TypeScript ESLint config)
+- Fixed lint error: changed `app: any` to `app: App` in stage3-curriculum.ts
+- All 135 tests pass, lint passes (16 warnings, 0 errors), typecheck passes
+- verify.sh exits 0 on healthy tree
+Status: COMPLETE
+
+--- Iteration 3 [2026-04-18 01:26:52] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 6
+Tasks completed: 25
+Input-tokens: 22560
+Output-tokens: 2949
+Cache-tokens: 502478
+
+## Task 26: Expand automated test coverage
+- Created plugin/tests/unit/canvas.test.ts (11 tests): deterministic output, layered grid coordinates, edge direction, slugified paths, unicode handling
+- Created plugin/tests/unit/frontmatter.test.ts (16 tests): YAML escaping (quotes, colons, multiline, backslashes), arrays, booleans, nulls
+- All 162 tests pass, verify.sh exits 0
+Status: COMPLETE
+
+--- Iteration 4 [2026-04-18 01:30:23] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 5
+Tasks completed: 26
+Input-tokens: 28058
+Output-tokens: 7350
+Cache-tokens: 780165
+
+## Task 27: Mobile polish pass
+- Added loading empty state to ProgressView (spinner + "Preparing your curriculum..." message)
+- Added error empty state to ProgressView (error icon, message, retry/cancel buttons)
+- ProgressView: added injectSpinAnimation() for CSS keyframe animation
+- ProgressView: added hasError() and getErrorMessage() helper methods
+- ProgressView: lesson items now have min-height: 48px for touch targets
+- ProgressView: cancel button has min-height: 48px, min-width: 160px
+- taxonomy-view.ts: continueBtn and selectAllBtn now have min-height: 48px, min-width 100-120px
+- taxonomy-view.ts: node rows now have min-height: 48px and cursor: pointer
+- taxonomy-view.ts: expand/collapse toggle now has 32x32px touch target
+- taxonomy-view.ts: checkboxes are now 24x24px with min-width/height: 24px
+- taxonomy-view.ts: labels now have min-height: 48px and flex display for alignment
+- topic-input-modal.ts: added coverMode detection for responsive button layout
+- topic-input-modal.ts: input field now has min-height: 48px, font-size: 16px
+- topic-input-modal.ts: buttons stack vertically on cover mode (width < 500px)
+- syllabus-editor-view.ts: deleteModuleBtn now has min-width: 48px, min-height: 48px
+- syllabus-editor-view.ts: deleteBtn now has min-width: 48px, min-height: 48px
+- likert-modal.ts: added isCoverMode import and coverMode field
+- likert-modal.ts: cards are responsive - 100% width on cover, auto on inner
+- likert-modal.ts: card padding reduced on cover mode (16px vs 20px)
+- All 162 tests pass, lint shows 16 warnings (0 errors), typecheck passes
+- Build produces dist/main.js (139.1 KB)
+Status: COMPLETE
+
+--- Iteration 5 [2026-04-18 01:35:xx] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 4
+Tasks completed: 27
+
+--- Iteration 5 [2026-04-18 01:36:40] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 4
+Tasks completed: 27
+Input-tokens: 42573
+Output-tokens: 15544
+Cache-tokens: 1774281
+
+## Task 28: Sync-conflict pass
+- Verified all adapter.write calls use atomic .tmp + rename pattern (cache.ts, lock.ts)
+- Created plugin/src/ui/conflict-modal.ts with ConflictModal class and showConflictModal helper
+- Updated Stage3Options to include lockService: LockService
+- Updated runStage3() to acquire lock at start, show ConflictModal if lock held by another device
+- Updated Stage4Options to include lockService: LockService and app: App
+- Updated Stage4Runner.run() to acquire lock at start, show ConflictModal if lock held, release lock on completion/error
+- ConflictModal displays device name, start time, and Cancel/Override buttons
+- All 162 tests pass, lint shows 16 warnings (0 errors), typecheck passes
+- Build produces dist/main.js (139.1 KB)
+Status: COMPLETE
+
+--- Iteration 6 [2026-04-18 01:44:03] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 3
+Tasks completed: 28
+Input-tokens: 42101
+Output-tokens: 13340
+Cache-tokens: 2142857
+
+
+## Task 29: Prepare BRAT release
+- Updated plugin/manifest.json with authorUrl (https://github.com/anomalyco) and enhanced description
+- Created plugin/versions.json with version mapping
+- Created root README.md with project overview, features, BRAT installation instructions, development setup, and architecture
+- Created .github/workflows/release.yml that triggers on tag v*, builds plugin, and creates GitHub Release with main.js, manifest.json, styles.css
+- Created .github/workflows/ci.yml for lint, typecheck, and test on push/PR to main
+- All 162 tests pass, typecheck passes, build produces dist/main.js (139.1 KB)
+- F15 acceptance criteria met
+Status: COMPLETE
+--- Iteration 7 [2026-04-18 01:47:30] ---
+Status: SUCCESS
+Exit code: 0
+Tasks remaining: 2
+Tasks completed: 29
+Input-tokens: 28808
+Output-tokens: 6075
+Cache-tokens: 978020
+

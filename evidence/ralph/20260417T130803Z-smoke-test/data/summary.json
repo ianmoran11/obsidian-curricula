@@ -1,0 +1,18 @@
+{
+  "title": "Ralph Evidence Report",
+  "label": "smoke-test",
+  "mode": "both",
+  "status": "UNKNOWN",
+  "iteration": null,
+  "projectDir": "/Users/ian/projects/obsidian-curricula",
+  "capturedAt": "2026-04-17T13:08:03.175Z",
+  "viewport": "1440x960",
+  "taskCounts": {
+    "incomplete": 31,
+    "complete": 0
+  },
+  "recentProgress": [],
+  "recentCosts": [],
+  "config": {},
+  "ffmpegAvailable": true
+}

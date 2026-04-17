@@ -1,0 +1,31 @@
+{
+  "generatedAt": "2026-04-17T13:08:03.175Z",
+  "projectDir": "/Users/ian/projects/obsidian-curricula",
+  "label": "smoke-test",
+  "iteration": null,
+  "status": "UNKNOWN",
+  "mode": "both",
+  "viewport": "1440x960",
+  "artifacts": [
+    {
+      "type": "screenshot",
+      "path": "artifacts/report.png",
+      "sha256": "c11d9894ed4a875c3bfce2b2d4d196ca3b3c17785b8ba764c3ca32eb9146e471"
+    },
+    {
+      "type": "poster",
+      "path": "artifacts/poster.png",
+      "sha256": "c11d9894ed4a875c3bfce2b2d4d196ca3b3c17785b8ba764c3ca32eb9146e471"
+    },
+    {
+      "type": "video/webm",
+      "path": "artifacts/report.webm",
+      "sha256": "7efb6a6f7e638444f1f63f9a5ef039f1a9ae29818d5f3696daf695c31578c83e"
+    },
+    {
+      "type": "video/mp4",
+      "path": "artifacts/report.mp4",
+      "sha256": "8754b95f15243a6258e9386a8a7a0919ed5678f894ab32380e7473bb018e7a59"
+    }
+  ]
+}

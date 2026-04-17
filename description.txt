@@ -1,0 +1,69 @@
+# Plugin Concept: Obsidian Auto-Tutor & Curriculum Generator
+
+## 1. High-Level Summary
+This document outlines the concept for an Obsidian plugin designed to turn a dedicated Obsidian vault into a personalized, AI-driven learning environment. The plugin processes source materials through a multi-stage LLM workflow (via OpenRouter) to generate a customized curriculum and draft comprehensive Markdown learning content. The system relies on a strictly modular architecture to allow future backend upgrades (like local RAG or map-reduce) without breaking the core directed acyclic graph (DAG) pipeline.
+
+## 2. Vault Folder Structure
+To maintain a clean separation of concerns, the plugin will operate within a dedicated "Course Vault" using the following required directory structure:
+* `/1-Raw_Sources`: Stores original reference materials (PDFs, images, etc.).
+* `/2-Markdown_Sources`: Contains text-extracted, Markdown versions of the raw sources.
+* `/3-Synthesized`: (Reserved for future use) Will contain AI-compressed summaries of the Markdown sources to save token costs.
+* `/4-Curriculum`: The destination for the finalized, generated lessons, Maps of Content (MOCs), indices, and Canvas files.
+
+## 3. The Target Environment & Architecture
+* Platform: Obsidian Desktop.
+* Tech Stack: TypeScript, Obsidian Plugin API.
+* LLM Provider: OpenRouter API.
+* Architectural Constraints: 
+    * Modular Context Engine: The MVP will concatenate `/2-Markdown_Sources` into a single long-context string. The downstream stages must only expect this standardized text payload.
+    * Service Layer Abstraction: The LLM fetch logic must be decoupled into a central class to allow easy switching to local endpoints in the future.
+    * Resumable DAG Pipeline: State handoffs between stages must use strictly typed JSON schemas. The plugin must cache the output of each stage so the user can pause the process or recover gracefully from an API timeout without starting over.
+    * JSON Validation: The plugin must include a parsing layer to validate and clean the LLM's JSON outputs before rendering the UI for the next stage.
+
+## 4. Plugin Settings & Configuration
+The plugin must include a native Obsidian settings tab with the following:
+* API Configuration: Field for the OpenRouter API key and a dropdown/text field for the default model (e.g., `anthropic/claude-3.5-sonnet`).
+* Prompt Templates: Editable text areas exposing the system prompts used for each of the 5 stages, allowing power users to tweak the generation behavior.
+
+## 5. The Multi-Stage Workflow
+The workflow is triggered via an Obsidian Command Palette command (e.g., "Auto-Tutor: Start New Course") or a ribbon icon.
+
+* Stage 0: Topic Explorer (Scope Definition)
+    * Input: User inputs a broad seed topic (e.g., "Machine Learning") into an initial prompt modal.
+    * LLM Action: Generates a high-level, hierarchical taxonomy of the subject.
+    * System Action: Renders an interactive, expandable tree-view in the UI. 
+    * User Action: Browses the taxonomy, expanding nodes, and checking/unchecking boxes to define the tailored scope.
+    * Output: A filtered JSON tree defining the curriculum boundaries.
+
+* Stage 1: Initialization & Concept Extraction
+    * Input: The scoped JSON tree from Stage 0 + concatenated `/2-Markdown_Sources` context.
+    * LLM Action: Analyzes the defined scope and references to extract specific core concepts and terminology.
+    * Output: A structured list of foundational concepts (JSON array).
+
+* Stage 2: Frictionless Diagnostic Assessment
+    * Input: The concept list from Stage 1.
+    * System Action: Renders a clean UI modal presenting each concept alongside a Likert scale (1 = Unfamiliar to 5 = Expert) or a Yes/No toggle.
+    * User Action: Rapidly clicks through the scales/toggles to self-assess.
+    * Output: A JSON key-value map of user proficiency (e.g., `{"Concept A": 1, "Concept B": 4}`).
+
+* Stage 3: Curriculum Design
+    * Input: Scoped taxonomy + source text + proficiency JSON map.
+    * LLM Action: Drafts a structured syllabus. The prompt must explicitly instruct the LLM to skip or condense lessons for concepts where the user scored a 4 or 5.
+    * User Action: Edits the syllabus via the UI, adding/removing lessons, before finalizing.
+    * Output: A finalized JSON tree of the course structure.
+
+* Stage 4: Iterative Content Generation & Navigation Linking
+    * Input: The finalized curriculum tree.
+    * LLM Action: Iteratively generates the Markdown content for each lesson.
+    * System Action: 
+        1. Automatically creates the MOCs and `.md` files within `/4-Curriculum`. Includes logic to handle filename collisions gracefully.
+        2. Injects standard YAML frontmatter (e.g., `status: unread`, `difficulty`).
+        3. Injects internal navigation mechanics: Breadcrumbs at the top (`[[Course Index]] > [[Module 1]]`) and sequential pagination links at the bottom (`<< [[Previous Lesson]] | [[Next Lesson]] >>`).
+        4. (MVP Feature) Generates an Obsidian `.canvas` file acting as a visual flowchart of the curriculum, linking the generated nodes based on prerequisites.
+
+## 6. Instructions for PRD Generation
+When generating the Product Requirements Document (PRD) from this concept, please provide:
+1.  A detailed text-based User Flow diagram covering all stages and UI interactions.
+2.  TypeScript interfaces (`interfaces.ts`) for the JSON state payloads passed between all stages to ensure the DAG pipeline is robust.
+3.  Specific examples of the system prompts required for the OpenRouter API at each stage, including how to enforce JSON output.
+4.  Acceptance criteria for the MVP, focusing on the Option 1 "Long Context" ingestion method, native Obsidian navigation features, and state recovery.

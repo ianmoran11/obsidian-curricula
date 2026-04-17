@@ -1,0 +1,13 @@
+{
+  "name": "@obsidian-curricula/harness",
+  "version": "1.0.0",
+  "description": "E2E evidence harness for Obsidian Curricula",
+  "type": "commonjs",
+  "scripts": {
+    "evidence": "node src/record.js",
+    "evidence:list": "node src/record.js --list"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.59.1"
+  }
+}

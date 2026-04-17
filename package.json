@@ -1,0 +1,13 @@
+{
+  "name": "obsidian-curricula",
+  "version": "1.0.0",
+  "description": "Obsidian Auto-Tutor & Curriculum Generator",
+  "private": true,
+  "scripts": {
+    "evidence": "node evidence/harness/src/record.js",
+    "evidence:list": "node evidence/harness/src/record.js --list"
+  },
+  "workspaces": [
+    "evidence/harness"
+  ]
+}

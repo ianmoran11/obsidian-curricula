@@ -1,0 +1,29 @@
+{
+  "name": "obsidian-auto-tutor",
+  "version": "0.1.0",
+  "description": "AI-driven curriculum generator and auto-tutor for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "build": "esbuild main.ts --bundle --platform=node --target=node18 --format=cjs --outdir=dist --external:obsidian",
+    "dev": "esbuild main.ts --bundle --platform=node --target=node18 --format=cjs --outdir=dist --external:obsidian --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts",
+    "test": "vitest run"
+  },
+  "keywords": ["obsidian", "plugin", "education", "curriculum"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  },
+  "dependencies": {
+    "obsidian": "^1.5.0",
+    "zod": "^3.22.0"
+  }
+}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.auto-tutor.docling</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>--SCRIPT_DIR--</string>
+        <string>watch</string>
+        <string>--source</string>
+        <string>--SOURCE_DIR--</string>
+        <string>--target</string>
+        <string>--TARGET_DIR--</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardErrorPath</key>
+    <string>/Users/ian/Library/Logs/auto-tutor-docling.log</string>
+    <key>StandardOutPath</key>
+    <string>/Users/ian/Library/Logs/auto-tutor-docling.log</string>
+</dict>
+</plist>
