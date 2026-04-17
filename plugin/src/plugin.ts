@@ -52,7 +52,7 @@ export class CurriculaPlugin extends Plugin {
     this.contextBuilder = new ContextBuilder(this.app.vault);
 
     this.addCommand({
-      id: 'auto-tutor:start-new-course',
+      id: 'curricula:start-new-course',
       name: 'Start New Course',
       callback: () => {
         void this.startNewCourse();

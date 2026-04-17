@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/plugin.ts
-var import_obsidian12 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -6252,7 +6252,6 @@ var Stage4Runner = class {
 };
 
 // src/ui/syllabus-editor-view.ts
-var import_obsidian10 = require("obsidian");
 var SyllabusEditor = class {
   constructor(options) {
     this.modules = [];
@@ -6341,12 +6340,12 @@ var SyllabusEditor = class {
     `;
     deleteModuleBtn.addEventListener("click", () => {
       moduleEl.remove();
-      this.curriculum.modules.splice(moduleIndex, 1);
+      this.curriculum.modules.splice(this.curriculum.modules.indexOf(module2), 1);
     });
     const lessonsContainer = moduleEl.createDiv("lessons-container");
     lessonsContainer.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
     for (let j = 0; j < module2.lessons.length; j++) {
-      const lessonEl = this.renderLesson(module2.lessons[j], module2, j);
+      const lessonEl = this.renderLesson(module2.lessons[j], module2);
       lessonsContainer.appendChild(lessonEl);
     }
     const addLessonBtn = lessonsContainer.createEl("button", { text: "+ Add Lesson" });
@@ -6370,12 +6369,12 @@ var SyllabusEditor = class {
         condensed: false
       };
       module2.lessons.push(newLesson);
-      const lessonEl = this.renderLesson(newLesson, module2, module2.lessons.length - 1);
+      const lessonEl = this.renderLesson(newLesson, module2);
       lessonsContainer.insertBefore(lessonEl, addLessonBtn);
     });
     return moduleEl;
   }
-  renderLesson(lesson, module2, lessonIndex) {
+  renderLesson(lesson, module2) {
     const lessonEl = document.createElement("div");
     lessonEl.className = "lesson";
     lessonEl.style.cssText = `
@@ -6441,7 +6440,7 @@ var SyllabusEditor = class {
     `;
     deleteBtn.addEventListener("click", () => {
       lessonEl.remove();
-      module2.lessons.splice(lessonIndex, 1);
+      module2.lessons.splice(module2.lessons.indexOf(lesson), 1);
     });
     return lessonEl;
   }
@@ -6704,8 +6703,8 @@ function createProgressView(options) {
 }
 
 // src/ui/resume-modal.ts
-var import_obsidian11 = require("obsidian");
-var ResumePromptModal = class extends import_obsidian11.Modal {
+var import_obsidian10 = require("obsidian");
+var ResumePromptModal = class extends import_obsidian10.Modal {
   constructor(app, options) {
     super(app);
     this.courseLabel = options.courseLabel;
@@ -6722,13 +6721,13 @@ var ResumePromptModal = class extends import_obsidian11.Modal {
     });
     const buttonRow = contentEl.createDiv();
     buttonRow.style.cssText = "display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px;";
-    const dismissButton = new import_obsidian11.ButtonComponent(buttonRow);
+    const dismissButton = new import_obsidian10.ButtonComponent(buttonRow);
     dismissButton.setButtonText("Later");
     dismissButton.onClick(() => {
       this.close();
       this.onDismiss();
     });
-    const resumeButton = new import_obsidian11.ButtonComponent(buttonRow);
+    const resumeButton = new import_obsidian10.ButtonComponent(buttonRow);
     resumeButton.setButtonText("Resume");
     resumeButton.setCta();
     resumeButton.onClick(() => {
@@ -6744,7 +6743,7 @@ var ResumePromptModal = class extends import_obsidian11.Modal {
 // src/plugin.ts
 var DEFAULT_MODEL = "anthropic/claude-3.5-haiku";
 var DEFAULT_MODEL_CONTEXT_LENGTH = 32e3;
-var CurriculaPlugin = class extends import_obsidian12.Plugin {
+var CurriculaPlugin = class extends import_obsidian11.Plugin {
   async onLoad() {
     this.settings = await loadSettings(this);
     this.settingsTab = new CurriculaSettingsTab(this.app, this, this.settings);
@@ -6758,7 +6757,7 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
     this.lockService = new LockService(this.app.vault, this.app.vault.adapter);
     this.contextBuilder = new ContextBuilder(this.app.vault);
     this.addCommand({
-      id: "auto-tutor:start-new-course",
+      id: "curricula:start-new-course",
       name: "Start New Course",
       callback: () => {
         void this.startNewCourse();
@@ -6835,9 +6834,9 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
         return;
       }
       await this.persistStage(cache, 4, progress);
-      new import_obsidian12.Notice(`Course ready: ${curriculum.title}`);
+      new import_obsidian11.Notice(`Course ready: ${curriculum.title}`);
     } catch (error) {
-      new import_obsidian12.Notice(`Course generation failed: ${error.message}`);
+      new import_obsidian11.Notice(`Course generation failed: ${error.message}`);
     }
   }
   createInitialCache(courseId) {
@@ -6939,7 +6938,7 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
   async openSyllabusEditor(curriculum) {
     return new Promise((resolve) => {
       let settled = false;
-      const modal = new import_obsidian12.Modal(this.app);
+      const modal = new import_obsidian11.Modal(this.app);
       const finish = (result) => {
         if (settled) {
           return;
@@ -6968,7 +6967,7 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
   async runStage4Flow(cache, courseId, curriculum, concepts, initialProgress) {
     const context = await this.contextBuilder.buildContext(DEFAULT_MODEL_CONTEXT_LENGTH);
     let runner = null;
-    const modal = new import_obsidian12.Modal(this.app);
+    const modal = new import_obsidian11.Modal(this.app);
     const closeAfterCancel = async () => {
       if (!runner) {
         modal.close();
@@ -7008,7 +7007,7 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
         modal.close();
       },
       onError: (error) => {
-        new import_obsidian12.Notice(`Generation failed: ${error.message}`);
+        new import_obsidian11.Notice(`Generation failed: ${error.message}`);
       }
     });
     let view = createProgressView({
@@ -7127,7 +7126,7 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
     const { nextStage, cache } = resumeInfo;
     const courseId = cache.meta.courseId;
     if (nextStage === 0 || !cache.stage0) {
-      new import_obsidian12.Notice(`Cannot resume ${courseId}: Stage 0 input was never completed.`);
+      new import_obsidian11.Notice(`Cannot resume ${courseId}: Stage 0 input was never completed.`);
       return;
     }
     let concepts = cache.stage1 ?? null;
@@ -7169,7 +7168,7 @@ var CurriculaPlugin = class extends import_obsidian12.Plugin {
       return;
     }
     await this.persistStage(cache, 4, progress);
-    new import_obsidian12.Notice(`Course ready: ${curriculum.title}`);
+    new import_obsidian11.Notice(`Course ready: ${curriculum.title}`);
   }
 };
 
