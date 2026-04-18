@@ -4,8 +4,9 @@
   "description": "AI-driven curriculum generator and auto-tutor for Obsidian",
   "main": "main.js",
   "scripts": {
-    "build": "esbuild main.ts --bundle --platform=node --target=node18 --format=cjs --outdir=dist --external:obsidian",
+    "build": "esbuild main.ts --bundle --platform=node --target=node18 --format=cjs --outdir=dist --external:obsidian && npm run copy-assets",
     "dev": "esbuild main.ts --bundle --platform=node --target=node18 --format=cjs --outdir=dist --external:obsidian --watch",
+    "copy-assets": "node -e \"require('fs').copyFileSync('manifest.json','dist/manifest.json'); require('fs').copyFileSync('styles.css','dist/styles.css');\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/**/*.ts",
     "test": "vitest run"
