@@ -36,7 +36,7 @@ export class CurriculaPlugin extends Plugin {
   openRouter!: OpenRouterService;
   contextBuilder!: ContextBuilder;
 
-  async onLoad(): Promise<void> {
+  async onload(): Promise<void> {
     this.settings = await loadSettings(this);
     this.settingsTab = new CurriculaSettingsTab(this.app, this, this.settings);
     this.addSettingTab(this.settingsTab);
