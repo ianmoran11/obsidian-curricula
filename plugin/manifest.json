@@ -6,6 +6,5 @@
   "description": "AI-driven curriculum generator and auto-tutor for Obsidian. Turns your vault into a personalised, proficiency-aware learning environment.",
   "author": "Ian",
   "authorUrl": "https://github.com/anomalyco",
-  "isDesktopOnly": false,
-  "requiresJs": true
+  "isDesktopOnly": false
 }

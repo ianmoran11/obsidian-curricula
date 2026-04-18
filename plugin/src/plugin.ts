@@ -37,33 +37,69 @@ export class CurriculaPlugin extends Plugin {
   contextBuilder!: ContextBuilder;
 
   async onload(): Promise<void> {
-    this.settings = await loadSettings(this);
-    this.settingsTab = new CurriculaSettingsTab(this.app, this, this.settings);
-    this.addSettingTab(this.settingsTab);
+    try {
+      this.settings = await loadSettings(this);
+      this.settingsTab = new CurriculaSettingsTab(this.app, this, this.settings);
+      this.addSettingTab(this.settingsTab);
 
-    this.openRouter = new OpenRouterService({
-      apiKey: this.settings.openRouterApiKey,
-      baseUrl: OPENROUTER_BASE_URL,
-    });
-    this.openRouter.hydrateModelsCache(this.settings._modelsCache);
+      this.openRouter = new OpenRouterService({
+        apiKey: this.settings.openRouterApiKey,
+        baseUrl: OPENROUTER_BASE_URL,
+      });
+      this.openRouter.hydrateModelsCache(this.settings._modelsCache);
 
-    this.cacheService = new CacheService(this.app.vault.adapter, this.manifest.dir || '');
-    this.lockService = new LockService(this.app.vault, this.app.vault.adapter);
-    this.contextBuilder = new ContextBuilder(this.app.vault);
+      this.cacheService = new CacheService(this.app.vault.adapter, this.manifest.dir || '');
+      this.lockService = new LockService(this.app.vault, this.app.vault.adapter);
+      this.contextBuilder = new ContextBuilder(this.app.vault);
 
-    this.addCommand({
-      id: 'curricula:start-new-course',
-      name: 'Start New Course',
-      callback: () => {
+      this.addCommand({
+        id: 'curricula:start-new-course',
+        name: 'Start New Course',
+        callback: () => {
+          void this.startNewCourse();
+        }
+      });
+
+      this.addRibbonIcon('graduation-cap', 'Start New Course', () => {
         void this.startNewCourse();
-      }
-    });
+      });
 
-    this.addRibbonIcon('graduation-cap', 'Start New Course', () => {
-      void this.startNewCourse();
-    });
+      this.app.workspace.onLayoutReady(() => {
+        void this.checkForInProgressCourses().catch((error) => {
+          console.error('Curricula: resume check failed', error);
+        });
+      });
+    } catch (error) {
+      await this.reportLoadFailure(error);
+      throw error;
+    }
+  }
 
-    await this.checkForInProgressCourses();
+  private async reportLoadFailure(error: unknown): Promise<void> {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const body = [
+      `# Curricula failed to load`,
+      ``,
+      `Timestamp: ${new Date().toISOString()}`,
+      ``,
+      `## Error`,
+      '```',
+      err.message,
+      '```',
+      ``,
+      `## Stack`,
+      '```',
+      err.stack ?? '(no stack)',
+      '```',
+    ].join('\n');
+
+    try {
+      await this.app.vault.adapter.write('curricula-load-error.md', body);
+    } catch {
+      // Nothing we can do if the vault is unwritable.
+    }
+
+    new Notice(`Curricula failed to load: ${err.message}`, 10000);
   }
 
   async applySettings(settings: CurriculaSettings): Promise<void> {
