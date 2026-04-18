@@ -6744,7 +6744,7 @@ var ResumePromptModal = class extends import_obsidian10.Modal {
 var DEFAULT_MODEL = "anthropic/claude-3.5-haiku";
 var DEFAULT_MODEL_CONTEXT_LENGTH = 32e3;
 var CurriculaPlugin = class extends import_obsidian11.Plugin {
-  async onLoad() {
+  async onload() {
     this.settings = await loadSettings(this);
     this.settingsTab = new CurriculaSettingsTab(this.app, this, this.settings);
     this.addSettingTab(this.settingsTab);
@@ -7173,4 +7173,4 @@ var CurriculaPlugin = class extends import_obsidian11.Plugin {
 };
 
 // main.ts
-module.exports = new CurriculaPlugin();
+module.exports = CurriculaPlugin;
