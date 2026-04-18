@@ -33,7 +33,13 @@ npm install
 npm run build
 ```
 
-Then copy `plugin/dist/` to your vault's `.obsidian/plugins/obsidian-auto-tutor/` directory.
+Then create `.obsidian/plugins/curricula/` in your vault and copy these three files into it:
+
+- `plugin/dist/main.js`
+- `plugin/dist/manifest.json`
+- `plugin/dist/styles.css`
+
+The folder name must match the manifest `id` (`curricula`).
 
 ## Setting Up the Vault
 
@@ -42,7 +48,7 @@ The plugin requires a specific vault structure:
 ```
 <CourseVault>/
 ├── .obsidian/
-│   └── plugins/obsidian-auto-tutor/     # plugin install location
+│   └── plugins/curricula/               # plugin install location
 ├── 1-Raw_Sources/                       # PDFs, images — human-dropped
 ├── 2-Markdown_Sources/                  # docling output — machine-written
 ├── 3-Synthesized/                       # reserved (future)
